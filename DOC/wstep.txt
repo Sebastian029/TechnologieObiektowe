@@ -1,0 +1,92 @@
+﻿Nazwiska, imiona oraz adresy mailowe:
+
+    Dominik Jaroszek s093552@student.tu.kielce.pl
+
+    Sebastian Iwan s092715@student.tu.kielce.pl
+
+    Błażej Jakubczyk s092717@student.tu.kielce.pl
+
+
+
+Temat:
+    Konwersja danych pomiędzy różnymi modelami
+
+    W części teoretycznej należy opisać trzy wybrane modele danych: dokumentowy, grafowy i kolumnowy. W części praktycznej należy opracować narzędzie umożliwiające konwersję danych z modelu obiektowego do wybranego modelu docelowego. Przykładowo, narzędzie odczytuje dane z obiektowego modelu i automatycznie przekształca je do postaci dokumentowej (JSON), grafowej lub kolumnowej, dostosowując ich strukturę do specyfiki danego modelu.
+
+
+
+
+
+
+Spis technologii, które będą używane (systemów, języków programowania, najważniejszych bibliotek, frameworków, itp.):
+
+    Kolumnowe (Apache Cassandra), Baza grafowa(Neo4j), Dokumentowe(MongoDB), Python
+
+
+Listę funkcjonalności wraz z realistycznym harmonogramem pracy:
+
+    Funkcjonalności:
+
+    Konwersja danych i modeli z postaci obiektowej na: modele kolumnowe, modele grafowe, modele JSON.
+
+
+
+Harmonogram:
+
+    Przygotowanie i konfiguracja środowiska.
+
+    Zaznajomienie się z podstawami wybranych baz danych.
+
+    Utworzenie przykładowego modelu obiektowego do przyszłych konwersji.
+
+    Konwersja modelu obiektowego na model JSON.
+
+    Konwersja modelu obiektowego na model grafowy.
+
+    Konwersja modelu obiektowego na model kolumnowy.
+
+    Organizacja kodu.
+
+    Testy.
+
+    Utworzenie dokumentacji.
+
+
+Podział prac w zespole:
+
+    Konwersja modelu obiektowego na model JSON - Sebastian
+
+    Konwersja modelu obiektowego na model grafowy - Domnik
+
+    Konwersja modelu obiektowego na model kolumnowy - Błażej
+
+
+
+
+
+Temat projektu z przedmiotu "Programowanie systemów rozproszonych", tematy prac inżynierskich i jeżeli są znane, to również magisterskich studentów realizujących projekt
+
+    Wspólny temat nas trojga: “Warcaby”.
+
+    Tematy prac inżynierskich:
+
+    Sebastian Iwan: Aplikacja do planowania diety dla sportowców.
+
+    Błażej Jakubczyk: System zarządzania terminarzami ogólnego przeznaczenia.
+
+    Dominik Jaroszek: Doradca kibica piłkarskiego.
+
+
+
+Tematy prac magisterskich są nieznane.
+
+Link do repozytorium git:
+
+    https://github.com/Sebastian029/TechnologieObiektowe
+
+
+
+
+
+
+
