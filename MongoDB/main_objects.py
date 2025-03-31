@@ -1,20 +1,7 @@
 ﻿from datetime import datetime, timedelta
-from main_classes import *
+from MongoDB.main_classes import *
 
-# Complex object
-complex_object = {
-    "string": "Hello MongoDB",
-    "integer": 42,
-    "float": 3.14159,
-    "boolean": True,
-    "none": None,
-    "date": datetime.now(),
-    "complex_number": 1 + 2j,
-    "list": [1, 2, 3],
-    "tuple": (4, 5, 6),
-    "set": {7, 8, 9},
-    "nested_dict": {"a": 1, "b": [2, 3]},
-}
+
 
 # Initialize library
 library = LibraryManagementSystem("Centralna Biblioteka")
@@ -44,4 +31,4 @@ magdalena1.borrow_book(python_book, library)
 magdalena2.borrow_book(python_book, library)
 
 # Store objects in a list
-objects_list = [complex_object, library, employee, python_book, ebook, audiobook, magdalena]
+objects_list = [ library, employee, python_book, ebook, audiobook, magdalena]
