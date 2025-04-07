@@ -290,7 +290,7 @@ class PyCassandraConverter:
 
 # Example usage
 if __name__ == "__main__":
-    from main_objects import objects_list
+    from objects import objects_list
 
     converter = PyCassandraConverter(keyspace="object_db")
 

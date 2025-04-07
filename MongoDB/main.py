@@ -2,7 +2,7 @@
 from datetime import date, datetime
 from pymongo import MongoClient
 
-from MongoDB.main_objects import objects_list
+from MongoDB.objects import objects_list
 
 
 class PyMongoConverter:
