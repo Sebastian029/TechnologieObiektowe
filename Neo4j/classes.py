@@ -44,7 +44,14 @@ class Book(Node):
         self.pages = pages
         self.is_available = True
         self.current_borrower: Optional[Person] = None
-        self.library: Optional['Library'] = None  # Link to Library
+        self.library: Optional['Library'] = None
+        self.editor_comments = [
+            ["Too slow", "Consider shortening"],
+            ["Excellent pacing"],
+            ["Revise dialogue", "Add emotional weight", ["Subcomment", "Another"]],
+        ]
+        # self.editor_comments = []
+
 
 
 class EBook(Book):
