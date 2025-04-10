@@ -66,7 +66,6 @@ class Neo4jConverter:
         label = obj.__class__.__name__
         properties = ", ".join(f"{key}: ${key}" for key in final_properties.keys())
 
-        # Updated to use elementId() instead of id()
         query = f"CREATE (n:{label} {{{properties}}}) RETURN elementId(n)"
 
         with self.driver.session() as session:
