@@ -10,32 +10,77 @@ from PyQt6.QtGui import QFont
 from typing import Dict, List, Optional, Any, Tuple
 import random
 import string
+import importlib
+import inspect
 
 # Reusing types from the original program
 ClassData = Dict[str, Any]
 ClassesDict = Dict[str, ClassData]
 ObjectData = Dict[str, Any]
-ObjectsDict = Dict[str, ObjectData]
+ObjectsDict = Dict[str, Any]  # Changed to store actual objects
 
 
 class ObjectGeneratorApp(QMainWindow):
     objects_changed = pyqtSignal()
 
-    def __init__(self, classes: ClassesDict):
+    def __init__(self, classes_module):
         super().__init__()
         self.setWindowTitle("Generator Obiektów")
         self.setGeometry(100, 100, 1000, 700)
 
-        self.classes = classes
-        self.objects: ObjectsDict = {}
+        self.classes_module = classes_module
+        self.classes = self._analyze_classes(classes_module)
+        self.objects: ObjectsDict = {}  # Stores actual Python objects
+        self.object_data = {}  # Stores metadata about objects (class, attributes)
 
         self._setup_ui()
         self._update_object_class_combo()
+        self._update_object_creation_form()  # Initialize the form
         self._update_object_tree()
 
         # Connect signals
         self.objects_changed.connect(self._update_object_tree)
         self.objects_changed.connect(self._update_composition_combos)
+
+    def _analyze_classes(self, module) -> ClassesDict:
+        """Analyzes the module and extracts class information."""
+        classes = {}
+
+        for name, obj in inspect.getmembers(module):
+            if inspect.isclass(obj) and obj.__module__ == module.__name__:
+                # Find parent class if there is inheritance
+                parent = None
+                for base in obj.__bases__:
+                    if base.__module__ == module.__name__ and base.__name__ != 'object':
+                        parent = base.__name__
+                        break
+
+                # Get class fields from its __init__ parameters
+                fields = []
+                try:
+                    init_signature = inspect.signature(obj.__init__)
+                    for param_name, param in init_signature.parameters.items():
+                        # Skip 'self' parameter
+                        if param_name != 'self':
+                            # Try to determine parameter type from annotations or defaults
+                            param_type = "str"  # Default type
+                            if param.annotation != inspect.Parameter.empty:
+                                if hasattr(param.annotation, '__name__'):
+                                    param_type = param.annotation.__name__
+                                else:
+                                    param_type = str(param.annotation)
+                            fields.append({"name": param_name, "type": param_type})
+                except (ValueError, AttributeError):
+                    pass  # In case __init__ is not accessible or doesn't exist
+
+                # Add to classes dictionary
+                classes[name] = {
+                    "fields": fields,
+                    "inherits": parent,
+                    "class_obj": obj  # Store the actual class object
+                }
+
+        return classes
 
     def _setup_ui(self):
         """Konfiguruje główny interfejs użytkownika."""
@@ -83,6 +128,11 @@ class ObjectGeneratorApp(QMainWindow):
         self.create_object_btn.clicked.connect(self._create_or_update_object)
         left_layout.addWidget(self.create_object_btn)
 
+        # Add button for creating predefined objects
+        self.create_predefined_btn = QPushButton("Utwórz przykładowe obiekty")
+        self.create_predefined_btn.clicked.connect(self._create_predefined_objects)
+        left_layout.addWidget(self.create_predefined_btn)
+
         # --- Right Panel: Object List ---
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -99,21 +149,14 @@ class ObjectGeneratorApp(QMainWindow):
         self.edit_object_btn.clicked.connect(self._edit_selected_object)
         btn_layout.addWidget(self.edit_object_btn)
 
+        self.create_object_btn = QPushButton("MongoDb")
+        self.create_object_btn.clicked.connect(self._create_selected_object)
+        btn_layout.addWidget(self.create_object_btn)
+
         self.delete_object_btn = QPushButton("Usuń zaznaczony")
         self.delete_object_btn.clicked.connect(self._delete_selected_object)
         btn_layout.addWidget(self.delete_object_btn)
         right_layout.addLayout(btn_layout)
-
-        # Export buttons
-        export_layout = QHBoxLayout()
-        self.export_json_btn = QPushButton("Eksportuj do JSON")
-        self.export_json_btn.clicked.connect(self._export_to_json)
-        export_layout.addWidget(self.export_json_btn)
-
-        self.export_python_btn = QPushButton("Eksportuj do Pythona")
-        self.export_python_btn.clicked.connect(self._export_to_python)
-        export_layout.addWidget(self.export_python_btn)
-        right_layout.addLayout(export_layout)
 
         # Add panels to main layout
         main_layout.addWidget(left_panel)
@@ -171,7 +214,7 @@ class ObjectGeneratorApp(QMainWindow):
                 input_widget = QComboBox()
                 input_widget.addItem("(Brak)")
                 # Add existing objects of this type
-                for obj_name, obj_data in self.objects.items():
+                for obj_name, obj_data in self.object_data.items():
                     if obj_data['class'] == field_type:
                         input_widget.addItem(obj_name)
             else:  # Unknown type
@@ -258,6 +301,50 @@ class ObjectGeneratorApp(QMainWindow):
                 if field_widget.count() > 1:  # Has options other than "(Brak)"
                     field_widget.setCurrentIndex(random.randint(1, field_widget.count() - 1))
 
+    def _create_predefined_objects(self):
+        """Creates predefined objects that can be accessed normally."""
+        try:
+            # Example: Create some Book and Library objects
+            book1 = self.classes['Book']['class_obj'](pages=200)
+            self.objects['book1'] = book1
+            self.object_data['book1'] = {
+                'class': 'Book',
+                'attributes': {'pages': 200}
+            }
+
+            book2 = self.classes['Book']['class_obj'](pages=350)
+            self.objects['book2'] = book2
+            self.object_data['book2'] = {
+                'class': 'Book',
+                'attributes': {'pages': 350}
+            }
+
+            library1 = self.classes['Library']['class_obj'](book_obj=book1, city="Warsaw")
+            self.objects['library1'] = library1
+            self.object_data['library1'] = {
+                'class': 'Library',
+                'attributes': {
+                    'book_obj': book1,
+                    'city': "Warsaw"
+                }
+            }
+
+            library2 = self.classes['Library']['class_obj'](book_obj=book2, city="Krakow")
+            self.objects['library2'] = library2
+            self.object_data['library2'] = {
+                'class': 'Library',
+                'attributes': {
+                    'book_obj': book2,
+                    'city': "Krakow"
+                }
+            }
+
+            self.objects_changed.emit()
+            QMessageBox.information(self, "Sukces", "Utworzono przykładowe obiekty: book1, book2, library1, library2")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Błąd", f"Nie udało się utworzyć przykładowych obiektów: {str(e)}")
+
     def _create_or_update_object(self):
         """Tworzy nowy obiekt lub aktualizuje istniejący."""
         class_name = self.object_class_combo.currentText()
@@ -320,20 +407,48 @@ class ObjectGeneratorApp(QMainWindow):
                 value = field_widget.currentText()
                 if value == "(Brak)":
                     value = None
+                else:
+                    # Get the actual object reference
+                    value = self.objects.get(value)
 
             attributes[field_name] = value
 
-        # Create or update object
-        self.objects[object_name] = {
-            'class': class_name,
-            'attributes': attributes
-        }
+        # Create or update the actual Python object
+        try:
+            if object_name in self.objects:
+                # Update existing object
+                obj = self.objects[object_name]
+                for attr_name, attr_value in attributes.items():
+                    setattr(obj, attr_name, attr_value)
+            else:
+                # Create new object
+                class_obj = self.classes[class_name]['class_obj']
 
-        # Clear form and update UI
-        self.object_name_input.clear()
-        self.objects_changed.emit()
-        QMessageBox.information(self, "Sukces",
-                                f"Obiekt '{object_name}' został {'zaktualizowany' if object_name in self.objects else 'utworzony'}.")
+                # Prepare constructor arguments
+                constructor_args = {}
+                for field_info in self._get_all_fields_recursive(class_name):
+                    field_name = field_info['field']['name']
+                    if field_name in attributes:
+                        constructor_args[field_name] = attributes[field_name]
+
+                # Create the instance
+                obj = class_obj(**constructor_args)
+                self.objects[object_name] = obj
+
+            # Update metadata
+            self.object_data[object_name] = {
+                'class': class_name,
+                'attributes': attributes
+            }
+
+            # Clear form and update UI
+            self.object_name_input.clear()
+            self.objects_changed.emit()
+            QMessageBox.information(self, "Sukces",
+                                    f"Obiekt '{object_name}' został {'zaktualizowany' if object_name in self.objects else 'utworzony'}.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Błąd", f"Nie udało się utworzyć obiektu: {str(e)}")
 
     def _edit_selected_object(self):
         """Wczytuje zaznaczony obiekt do formularza do edycji."""
@@ -352,11 +467,11 @@ class ObjectGeneratorApp(QMainWindow):
             QMessageBox.warning(self, "Błąd", f"Nie znaleziono obiektu '{object_name}'.")
             return
 
-        object_data = self.objects[object_name]
+        object_metadata = self.object_data[object_name]
 
         # Load object data into form
         self.object_name_input.setText(object_name)
-        class_index = self.object_class_combo.findText(object_data['class'])
+        class_index = self.object_class_combo.findText(object_metadata['class'])
         if class_index >= 0:
             self.object_class_combo.setCurrentIndex(class_index)
 
@@ -380,10 +495,10 @@ class ObjectGeneratorApp(QMainWindow):
             label_text = label_widget.text()
             field_name = label_text.split('(')[0].strip()
 
-            if field_name not in object_data['attributes']:
+            if field_name not in object_metadata['attributes']:
                 continue
 
-            value = object_data['attributes'][field_name]
+            value = object_metadata['attributes'][field_name]
 
             if isinstance(field_widget, QLineEdit):
                 field_widget.setText(str(value))
@@ -395,9 +510,17 @@ class ObjectGeneratorApp(QMainWindow):
                 if value is None:
                     field_widget.setCurrentIndex(0)  # "(Brak)"
                 else:
-                    index = field_widget.findText(value)
-                    if index >= 0:
-                        field_widget.setCurrentIndex(index)
+                    # Find the object name for this reference
+                    found = False
+                    for obj_name, obj in self.objects.items():
+                        if obj is value:
+                            index = field_widget.findText(obj_name)
+                            if index >= 0:
+                                field_widget.setCurrentIndex(index)
+                                found = True
+                                break
+                    if not found:
+                        field_widget.setCurrentIndex(0)
 
     def _delete_selected_object(self):
         """Usuwa zaznaczony obiekt."""
@@ -424,14 +547,39 @@ class ObjectGeneratorApp(QMainWindow):
 
         if reply == QMessageBox.StandardButton.Yes:
             del self.objects[object_name]
+            del self.object_data[object_name]
             self.objects_changed.emit()
             QMessageBox.information(self, "Sukces", f"Obiekt '{object_name}' został usunięty.")
+
+    def _create_selected_object(self):
+        """Save selected objects to MongoDB"""
+        try:
+            from MongoDB.main import PyMongoConverter
+            converter = PyMongoConverter(
+                connection_string="mongodb://localhost:27017/",
+                db_name="object_db"
+            )
+
+            try:
+                # Save all objects with their names
+                for obj_name, obj in self.objects.items():
+                    print(f"Saving {obj_name} ({obj.__class__.__name__}) to MongoDB...")
+                    # Save with object name as document ID
+                    converter.save_to_mongodb(obj, document_id=obj_name)
+
+                QMessageBox.information(self, "Success", "Objects saved to MongoDB successfully!")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save objects to MongoDB: {str(e)}")
+            finally:
+                converter.close()
+        except ImportError as e :
+            QMessageBox.critical(self, "Error", f"Could not import PyMongoConverter {e}")
 
     def _update_object_tree(self):
         """Aktualizuje drzewo obiektów."""
         self.object_tree.clear()
 
-        for obj_name, obj_data in sorted(self.objects.items()):
+        for obj_name, obj_metadata in sorted(self.object_data.items()):
             obj_item = QTreeWidgetItem([obj_name])
             font = obj_item.font(0)
             font.setBold(True)
@@ -439,14 +587,22 @@ class ObjectGeneratorApp(QMainWindow):
             self.object_tree.addTopLevelItem(obj_item)
 
             # Add class info
-            class_item = QTreeWidgetItem(["Klasa", obj_data['class']])
+            class_item = QTreeWidgetItem(["Klasa", obj_metadata['class']])
             obj_item.addChild(class_item)
 
+            # Get the actual object
+            obj = self.objects.get(obj_name)
+
             # Add attributes
-            if obj_data['attributes']:
-                for attr_name, attr_value in sorted(obj_data['attributes'].items()):
-                    attr_item = QTreeWidgetItem([attr_name, str(attr_value)])
-                    obj_item.addChild(attr_item)
+            if obj_metadata['attributes']:
+                for attr_name in sorted(obj_metadata['attributes'].keys()):
+                    try:
+                        attr_value = getattr(obj, attr_name, "<not set>")
+                        attr_item = QTreeWidgetItem([attr_name, str(attr_value)])
+                        obj_item.addChild(attr_item)
+                    except Exception as e:
+                        attr_item = QTreeWidgetItem([attr_name, f"<error: {str(e)}>"])
+                        obj_item.addChild(attr_item)
             else:
                 no_attr_item = QTreeWidgetItem(["Brak atrybutów", ""])
                 obj_item.addChild(no_attr_item)
@@ -473,8 +629,8 @@ class ObjectGeneratorApp(QMainWindow):
                     field_type = label_text.split('(')[1].split(')')[0].strip()
 
                     # Add compatible objects
-                    for obj_name, obj_data in self.objects.items():
-                        if obj_data['class'] == field_type:
+                    for obj_name, obj_metadata in self.object_data.items():
+                        if obj_metadata['class'] == field_type:
                             field_widget.addItem(obj_name)
 
                 # Restore selection
@@ -482,101 +638,12 @@ class ObjectGeneratorApp(QMainWindow):
                 if index >= 0:
                     field_widget.setCurrentIndex(index)
 
-    def _export_to_json(self):
-        """Eksportuje obiekty do pliku JSON."""
-        if not self.objects:
-            QMessageBox.warning(self, "Błąd", "Brak obiektów do eksportu.")
-            return
-
-        import json
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Eksport do JSON", "", "JSON Files (*.json);;All Files (*)"
-        )
-
-        if file_path:
-            try:
-                with open(file_path, 'w') as f:
-                    json.dump(self.objects, f, indent=2)
-                QMessageBox.information(self, "Sukces", f"Dane zostały wyeksportowane do {file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Błąd", f"Nie udało się zapisać pliku: {str(e)}")
-
-    def _export_to_python(self):
-        """Eksportuje obiekty jako kod Pythona."""
-        if not self.objects:
-            QMessageBox.warning(self, "Błąd", "Brak obiektów do eksportu.")
-            return
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Eksport do Pythona", "", "Python Files (*.py);;All Files (*)"
-        )
-
-        if file_path:
-            try:
-                with open(file_path, 'w') as f:
-                    f.write("# Wygenerowane obiekty\n\n")
-                    for obj_name, obj_data in self.objects.items():
-                        class_name = obj_data['class']
-                        f.write(f"{obj_name} = {class_name}()\n")
-                        for attr_name, attr_value in obj_data['attributes'].items():
-                            if isinstance(attr_value, str):
-                                attr_value = f"'{attr_value}'"
-                            f.write(f"{obj_name}.{attr_name} = {attr_value}\n")
-                        f.write("\n")
-                QMessageBox.information(self, "Sukces", f"Kod Pythona został wyeksportowany do {file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Błąd", f"Nie udało się zapisać pliku: {str(e)}")
-
 
 if __name__ == "__main__":
-    # Import system modules
-    import sys
-    import inspect
-    from PyQt6.QtWidgets import QApplication
-
-    # Import your class file - replace 'your_class_module' with the actual file name (without .py)
+    # Import the module with class definitions
     import wygenerowany_kod
 
-    # Dynamically build class dictionary from imported module
-    example_classes = {}
-
-    # Get all classes defined in the module
-    for name, obj in inspect.getmembers(wygenerowany_kod):
-        # Only include actual classes (not imported ones)
-        if inspect.isclass(obj) and obj.__module__ == wygenerowany_kod.__name__:
-
-            # Find parent class if there is inheritance
-            parent = None
-            for base in obj.__bases__:
-                if base.__module__ == wygenerowany_kod.__name__ and base.__name__ != 'object':
-                    parent = base.__name__
-                    break
-
-            # Get class fields from its __init__ parameters
-            fields = []
-            try:
-                init_signature = inspect.signature(obj.__init__)
-                for param_name, param in init_signature.parameters.items():
-                    # Skip 'self' parameter
-                    if param_name != 'self':
-                        # Try to determine parameter type from annotations or defaults
-                        param_type = "str"  # Default type
-                        if param.annotation != inspect.Parameter.empty:
-                            param_type = param.annotation.__name__
-                        fields.append({"name": param_name, "type": param_type})
-            except (ValueError, AttributeError):
-                pass  # In case __init__ is not accessible or doesn't exist
-
-            # Add to classes dictionary
-            example_classes[name] = {
-                "fields": fields,
-                "inherits": parent,
-                "compositions": []  # Would need more complex analysis for compositions
-            }
-
-    # Start the Object Generator App with our dynamically built classes
-
     app = QApplication(sys.argv)
-    window = ObjectGeneratorApp(example_classes)
+    window = ObjectGeneratorApp(wygenerowany_kod)
     window.show()
     sys.exit(app.exec())
