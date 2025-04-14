@@ -1,21 +1,18 @@
-﻿# -*- coding: utf-8 -*-
-import sys
+﻿import sys
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QListWidget, QListWidgetItem,
-    QComboBox, QMessageBox, QTreeWidget, QTreeWidgetItem, QStackedWidget,
-    QFormLayout, QScrollArea, QFileDialog, QSpinBox, QCheckBox,
-    # Import QDialog and QDialogButtonBox
-    QDialog, QDialogButtonBox
+    QLabel, QLineEdit, QPushButton,QComboBox, QMessageBox,
+    QTreeWidget, QTreeWidgetItem, QFormLayout, QScrollArea,
+    QSpinBox, QCheckBox, QDialog, QDialogButtonBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QLocale
-from PyQt6.QtGui import QFont, QDoubleValidator # Added QDoubleValidator for float example
-from typing import Dict, List, Optional, Any, Tuple, Union # Added Union
+from PyQt6.QtCore import  pyqtSignal, QLocale
+from PyQt6.QtGui import QDoubleValidator
+from typing import Dict, List, Optional, Any, Tuple
 import random
 import string
 import importlib
 import inspect
-import ast # For literal_eval
+import ast
 
 # --- Type Definitions (Optional but good practice) ---
 ClassData = Dict[str, Any]
@@ -427,18 +424,26 @@ class ObjectGeneratorApp(QMainWindow):
         self.edit_object_btn.clicked.connect(self._edit_selected_object)
         btn_layout.addWidget(self.edit_object_btn)
 
+        self.delete_object_btn = QPushButton("Usuń zaznaczony")
+        self.delete_object_btn.clicked.connect(self._delete_selected_object)
+        btn_layout.addWidget(self.delete_object_btn)
+
         self.connect_objects_btn = QPushButton("Połącz Obiekty")
         self.connect_objects_btn.clicked.connect(self._show_connect_objects_dialog)
         btn_layout.addWidget(self.connect_objects_btn)
 
         # Renamed variable to avoid conflict with the create button on the left
-        self.save_mongodb_btn = QPushButton("MongoDb")
+        self.save_mongodb_btn = QPushButton("MongoDB")
         self.save_mongodb_btn.clicked.connect(self._save_objects_to_mongodb) # Connect to the correct method
         btn_layout.addWidget(self.save_mongodb_btn)
 
-        self.delete_object_btn = QPushButton("Usuń zaznaczony")
-        self.delete_object_btn.clicked.connect(self._delete_selected_object)
-        btn_layout.addWidget(self.delete_object_btn)
+        self.save_mongodb_btn = QPushButton("Cassandra")
+        self.save_mongodb_btn.clicked.connect(self._save_objects_to_cassandra)  # Connect to the correct method
+        btn_layout.addWidget(self.save_mongodb_btn)
+
+        self.save_mongodb_btn = QPushButton("Neo4j")
+        self.save_mongodb_btn.clicked.connect(self._save_objects_to_neo4j)  # Connect to the correct method
+        btn_layout.addWidget(self.save_mongodb_btn)
         right_layout.addLayout(btn_layout)
 
         # Add panels to main layout
@@ -1087,6 +1092,104 @@ class ObjectGeneratorApp(QMainWindow):
              QMessageBox.critical(self, "Brak Biblioteki", "Biblioteka 'pymongo' nie jest zainstalowana (`pip install pymongo`).")
         except Exception as e:
              QMessageBox.critical(self, "Błąd", f"Nieoczekiwany błąd: {e}")
+
+    def _save_objects_to_cassandra(self):
+        """Saves all current objects to Cassandra (requires PyCassandraConverter)."""
+        if not self.objects:
+            QMessageBox.information(self, "Informacja", "Brak obiektów do zapisania.")
+            return
+
+        try:
+            # --- Dynamic Import ---
+            # Assume PyCassandraConverter is in Cassandra/main.py or main.py
+            # Adjust the import path based on your project structure
+            try:
+                # Adjust path as needed (e.g., 'Cassandra.converter', 'utils.cassandra_converter')
+                from Cassandra.main import PyCassandraConverter
+            except ImportError:
+                try:
+                    # If main.py is in the same directory or package
+                    from main import PyCassandraConverter
+                except ImportError:
+                    QMessageBox.critical(self, "Błąd Importu",
+                                         "Nie znaleziono klasy 'PyCassandraConverter'.\n"
+                                         "Upewnij się, że plik z konwerterem (np. Cassandra/main.py lub main.py) istnieje.")
+                    return
+
+            # Import Cassandra driver specifics for error handling
+            from cassandra.cluster import NoHostAvailable
+
+            # --- Connection Details (Keyspace provided) ---
+            # Contact points might be hardcoded in PyCassandraConverter,
+            # passed via config, or passed here if the constructor accepts them.
+            keyspace = "object_db"  # As requested by the user
+
+            converter = None
+            try:
+                print(f"Initializing Cassandra connection for keyspace: {keyspace}")
+                # Instantiate the Cassandra converter as requested
+                # Assumes PyCassandraConverter handles cluster connection internally
+                converter = PyCassandraConverter(keyspace=keyspace)
+
+                # Optional: Add a method to PyCassandraConverter to explicitly test
+                # the connection if needed, otherwise assume connection happens
+                # during instantiation or first use.
+                # e.g., converter.test_connection()
+                print("PyCassandraConverter initialized.")
+
+                saved_count = 0
+                errors = []
+                # Iterate through objects to save
+                for obj_name, obj in self.objects.items():
+                    print(f"Saving {obj_name} ({obj.__class__.__name__}) to Cassandra...")
+                    try:
+                        # Save using the Cassandra specific method
+                        converter.save_to_cassandra(obj)
+                        saved_count += 1
+                    except Exception as e:
+                        # Catch potential errors during the save operation for a single object
+                        error_msg = f"Failed saving '{obj_name}' to Cassandra: {str(e)}"
+                        print(error_msg)
+                        errors.append(error_msg)
+
+                # Report results
+                if not errors:
+                    QMessageBox.information(self, "Sukces",
+                                            f"Zapisano {saved_count} obiektów do Cassandra (Keyspace: {keyspace}).")
+                else:
+                    QMessageBox.warning(self, "Błędy Zapisu",
+                                        f"Zapisano {saved_count}/{len(self.objects)} obiektów do Cassandra.\n\nBłędy:\n" + "\n".join(
+                                            errors))
+
+            except NoHostAvailable as e:
+                # Specific error for Cassandra connection failure
+                QMessageBox.critical(self, "Błąd Połączenia Cassandra",
+                                     f"Nie można połączyć z klastrem Cassandra dla keyspace '{keyspace}'.\nSprawdź ustawienia i dostępność bazy.\n{e}")
+            except Exception as e:
+                # Catch other potential errors (e.g., during converter initialization, general save errors)
+                QMessageBox.critical(self, "Błąd Zapisu Cassandra", f"Wystąpił nieoczekiwany błąd: {str(e)}")
+            finally:
+                # Ensure the Cassandra connection is closed
+                if converter:
+                    try:
+                        print("Closing Cassandra connection...")
+                        converter.close()  # Assumes the converter has a close method
+                        print("Cassandra connection closed.")
+                    except Exception as e:
+                        print(f"Error closing Cassandra connection: {e}")
+
+
+        except ImportError:
+            # Error if the cassandra-driver library is missing
+            QMessageBox.critical(self, "Brak Biblioteki",
+                                 "Biblioteka 'cassandra-driver' nie jest zainstalowana.\n"
+                                 "Zainstaluj ją używając: pip install cassandra-driver")
+        except Exception as e:
+            # Catch any other unexpected errors (e.g., during dynamic import)
+            QMessageBox.critical(self, "Błąd", f"Nieoczekiwany błąd: {e}")
+
+    def _save_objects_to_neo4j(self):
+        pass
 
 
     def _update_object_tree(self):
