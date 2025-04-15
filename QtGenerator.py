@@ -1189,8 +1189,126 @@ class ObjectGeneratorApp(QMainWindow):
             QMessageBox.critical(self, "Błąd", f"Nieoczekiwany błąd: {e}")
 
     def _save_objects_to_neo4j(self):
-        pass
+        """Saves all current objects to Neo4j (requires Neo4jConverter), but only saves top-level objects and their connected objects."""
+        if not self.objects:
+            QMessageBox.information(self, "Informacja", "Brak obiektów do zapisania.")
+            return
 
+        try:
+            # Dynamic import of the Neo4jConverter class
+            try:
+                from Neo4j.main import Neo4jConverter
+            except ImportError:
+                try:
+                    from main import Neo4jConverter  # Try local dir
+                except ImportError:
+                    QMessageBox.critical(self, "Błąd Importu",
+                                         "Nie znaleziono klasy 'Neo4jConverter'.\n"
+                                         "Upewnij się, że plik z konwerterem (np. Neo4j/main.py lub main.py) istnieje.")
+                    return
+
+            # --- Connection Details (adjust as needed) ---
+            uri = "bolt://localhost:7687"
+            user = "neo4j"
+            password = "password"
+
+            converter = None
+            try:
+                print(f"Connecting to Neo4j at {uri} as user '{user}'")
+                converter = Neo4jConverter(uri=uri, user=user, password=password)
+
+                # Find top-level objects (objects not referenced by other objects)
+                top_level_objects = self._find_top_level_objects()
+
+                if not top_level_objects:
+                    QMessageBox.information(self, "Informacja", "Brak obiektów najwyższego poziomu do zapisania.")
+                    return
+
+                saved_count = 0
+                errors = []
+
+                for obj_name in top_level_objects:
+                    obj = self.objects[obj_name]
+                    print(f"Saving top-level object {obj_name} ({obj.__class__.__name__}) and its references...")
+                    try:
+                        converter.save(obj)
+                        saved_count += 1
+                    except Exception as e:
+                        error_msg = f"Nie udało się zapisać '{obj_name}': {str(e)}"
+                        print(error_msg)
+                        errors.append(error_msg)
+
+                if not errors:
+                    QMessageBox.information(self, "Sukces",
+                                            f"Zapisano {saved_count} obiektów najwyższego poziomu do Neo4j.")
+                else:
+                    QMessageBox.warning(self, "Błędy Zapisu",
+                                        f"Zapisano {saved_count}/{len(top_level_objects)} obiektów.\n\nBłędy:\n" + "\n".join(
+                                            errors))
+
+            except Exception as e:
+                QMessageBox.critical(self, "Błąd Połączenia Neo4j", f"Nie można połączyć z Neo4j.\n{e}")
+            finally:
+                if converter:
+                    converter.close()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Błąd", f"Nieoczekiwany błąd: {e}")
+
+    def _find_top_level_objects(self) -> List[str]:
+        """Finds objects that are not referenced by other objects (top-level objects)."""
+        referenced_objects = set()
+
+        # First pass: find all objects that are referenced by other objects
+        for obj_name, obj_instance in self.objects.items():
+            class_name = obj_instance.__class__.__name__
+            if class_name not in self.classes:
+                continue  # Skip objects of unknown classes
+
+            # Get all fields that could contain object references
+            fields_info = self._get_all_fields_recursive(class_name)
+            for field_info in fields_info:
+                field = field_info['field']
+                field_type = field['type']
+
+                # Check if this field could hold an object reference
+                if self._is_object_reference_type(field_type):
+                    try:
+                        referenced_obj = getattr(obj_instance, field['name'])
+                        if referenced_obj is not None:
+                            # Find the name of this referenced object
+                            for ref_name, ref_instance in self.objects.items():
+                                if ref_instance is referenced_obj:
+                                    referenced_objects.add(ref_name)
+                                    break
+                    except AttributeError:
+                        pass
+
+        # Top-level objects are those not in referenced_objects
+        top_level = [name for name in self.objects.keys() if name not in referenced_objects]
+        return top_level
+
+    def _is_object_reference_type(self, type_str: str) -> bool:
+        """Determines if a type string represents an object reference type."""
+        # Check if this is a direct class reference
+        if type_str in self.classes:
+            return True
+
+        # Check for Optional[Class] or Union[Class, None]
+        if '[' in type_str and ']' in type_str:
+            try:
+                content = type_str[type_str.find('[') + 1:type_str.rfind(']')]
+                parts = [p.strip() for p in content.split(',')]
+                for part in parts:
+                    if part.lower() not in ['none', 'nonetype']:
+                        # Check if part is a known class (remove any module prefix)
+                        class_name = part.split('.')[-1].strip("'\" ")
+                        if class_name in self.classes:
+                            return True
+            except Exception:
+                pass
+
+        return False
 
     def _update_object_tree(self):
         """Updates the tree view with the current state of objects."""
