@@ -509,6 +509,296 @@ class Neo4jTab(QWidget):
         else:
             parent_item.setText(1, str(value))
 
+# --- CassandraTab --- ADDED CLASS ---
+class CassandraTab(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        # Cassandra connection settings
+        self.contact_points_str = "127.0.0.1" # Comma-separated IPs
+        self.username = ""
+        self.password = ""
+        self.cluster = None
+        self.session = None
+        self.current_keyspace = None
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Configure the Cassandra tab interface."""
+        main_layout = QVBoxLayout(self)
+
+        # --- Connection Panel ---
+        connection_panel = QWidget()
+        connection_layout = QFormLayout(connection_panel)
+
+        # Contact points input
+        self.contact_points_input = QLineEdit(self.contact_points_str)
+        connection_layout.addRow("Contact Points:", self.contact_points_input)
+
+        # Username input
+        self.username_input = QLineEdit(self.username)
+        self.username_input.setPlaceholderText("(Optional)")
+        connection_layout.addRow("Username:", self.username_input)
+
+        # Password input
+        self.password_input = QLineEdit(self.password)
+        self.password_input.setPlaceholderText("(Optional)")
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        connection_layout.addRow("Password:", self.password_input)
+
+        # Connect button
+        self.connect_btn = QPushButton("Connect to Cassandra")
+        self.connect_btn.clicked.connect(self._connect_to_cassandra)
+        connection_layout.addRow(self.connect_btn)
+
+        # Status label
+        self.connection_status = QLabel("Not connected")
+        self.connection_status.setStyleSheet("color: red; font-weight: bold;")
+        connection_layout.addRow("Status:", self.connection_status)
+
+        main_layout.addWidget(connection_panel)
+
+        # --- Keyspace/Table Selection ---
+        selection_panel = QWidget()
+        selection_layout = QHBoxLayout(selection_panel)
+
+        # Keyspace selection
+        self.keyspace_combo = QComboBox()
+        self.keyspace_combo.setPlaceholderText("Select keyspace")
+        self.keyspace_combo.currentTextChanged.connect(self._update_tables_combo)
+        self.keyspace_combo.setEnabled(False)
+        selection_layout.addWidget(QLabel("Keyspace:"))
+        selection_layout.addWidget(self.keyspace_combo)
+
+        # Table selection
+        self.table_combo = QComboBox()
+        self.table_combo.setPlaceholderText("Select table")
+        self.table_combo.currentTextChanged.connect(self._load_table_data)
+        self.table_combo.setEnabled(False)
+        selection_layout.addWidget(QLabel("Table:"))
+        selection_layout.addWidget(self.table_combo)
+
+        # Refresh button
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self._refresh_data)
+        self.refresh_btn.setEnabled(False)
+        selection_layout.addWidget(self.refresh_btn)
+
+        main_layout.addWidget(selection_panel)
+
+        # --- Data Display ---
+        self.data_tree = QTreeWidget()
+        # Header set dynamically
+        self.data_tree.setColumnCount(1)
+        self.data_tree.setHeaderLabels(["Row Data"])
+        main_layout.addWidget(self.data_tree)
+
+        # --- Row Count ---
+        self.row_count_label = QLabel("Rows: 0")
+        main_layout.addWidget(self.row_count_label)
+
+    def _connect_to_cassandra(self):
+        """Establish connection to Cassandra."""
+        contact_points_str = self.contact_points_input.text().strip()
+        username = self.username_input.text().strip()
+        password = self.password_input.text() # No strip
+
+        if not contact_points_str:
+            QMessageBox.warning(self, "Input Error", "Contact Points cannot be empty.")
+            return
+
+        contact_points = [p.strip() for p in contact_points_str.split(',') if p.strip()]
+        if not contact_points:
+             QMessageBox.warning(self, "Input Error", "Invalid Contact Points format.")
+             return
+
+        auth_provider = None
+        if username:
+            auth_provider = PlainTextAuthProvider(username=username, password=password)
+
+        try:
+            # Shutdown existing connection if any
+            if self.session:
+                self.session.shutdown()
+                self.session = None
+            if self.cluster:
+                self.cluster.shutdown()
+                self.cluster = None
+
+            # Create new cluster and session
+            self.cluster = Cluster(contact_points=contact_points, auth_provider=auth_provider)
+            self.session = self.cluster.connect()
+
+            # Update UI
+            self.connection_status.setText("Connected")
+            self.connection_status.setStyleSheet("color: green; font-weight: bold;")
+            self.connect_btn.setText("Reconnect")
+            self.refresh_btn.setEnabled(True)
+            self.keyspace_combo.setEnabled(True)
+            self.table_combo.setEnabled(True) # Enable table combo box as well
+
+            # Load keyspaces
+            self._load_keyspaces()
+
+        except NoHostAvailable as e:
+            self.connection_status.setText(f"Connection failed: No hosts available")
+            self.connection_status.setStyleSheet("color: red; font-weight: bold;")
+            QMessageBox.critical(self, "Connection Error", f"Failed to connect to Cassandra (NoHostAvailable):\nCould not connect to any of the specified contact points: {', '.join(e.errors.keys())}")
+            self._reset_ui_on_disconnect()
+        except Exception as e: # Catch other errors like authentication issues
+            self.connection_status.setText(f"Error: {str(e)}")
+            self.connection_status.setStyleSheet("color: red; font-weight: bold;")
+            QMessageBox.critical(self, "Error", f"An error occurred during connection:\n{str(e)}")
+            self._reset_ui_on_disconnect()
+
+    def _reset_ui_on_disconnect(self):
+        """Reset UI elements when disconnected or connection fails."""
+        self.cluster = None
+        self.session = None
+        self.current_keyspace = None
+        self.connection_status.setText("Not connected")
+        self.connection_status.setStyleSheet("color: red; font-weight: bold;")
+        self.connect_btn.setText("Connect to Cassandra")
+        self.keyspace_combo.clear()
+        self.table_combo.clear()
+        self.data_tree.clear()
+        self.row_count_label.setText("Rows: 0")
+        self.refresh_btn.setEnabled(False)
+        self.keyspace_combo.setEnabled(False)
+        self.table_combo.setEnabled(False)
+        self.data_tree.setColumnCount(1)
+        self.data_tree.setHeaderLabels(["Row Data"])
+
+
+    def _load_keyspaces(self):
+        """Load available keyspaces into the combo box."""
+        if not self.cluster or not self.cluster.metadata:
+            return
+
+        self.keyspace_combo.clear()
+        self.table_combo.clear() # Clear tables when reloading keyspaces
+
+        try:
+            keyspace_names = list(self.cluster.metadata.keyspaces.keys())
+            # Filter out system keyspaces
+            system_keyspaces = {
+                'system', 'system_auth', 'system_distributed', 'system_schema',
+                'system_traces', 'system_views', 'system_virtual_schema',
+                'data_endpoint_auth' # Add others if needed
+            }
+            user_keyspaces = [ks for ks in keyspace_names if ks not in system_keyspaces]
+
+            self.keyspace_combo.addItems(sorted(user_keyspaces))
+            self.keyspace_combo.setCurrentIndex(-1) # Reset selection
+            self.keyspace_combo.setPlaceholderText("Select keyspace")
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Could not load keyspaces:\n{str(e)}")
+
+    def _update_tables_combo(self, keyspace_name):
+        """Update tables combo when keyspace changes."""
+        self.table_combo.clear()
+        self.data_tree.clear() # Clear data when keyspace changes
+        self.row_count_label.setText("Rows: 0")
+        self.current_keyspace = keyspace_name
+
+        if not keyspace_name or not self.cluster or not self.cluster.metadata:
+            self.table_combo.setPlaceholderText("Select table")
+            return
+
+        try:
+            # Get table metadata for the selected keyspace
+            tables_metadata = self.cluster.metadata.keyspaces.get(keyspace_name)
+            if tables_metadata:
+                table_names = list(tables_metadata.tables.keys())
+                self.table_combo.addItems(sorted(table_names))
+                self.table_combo.setCurrentIndex(-1) # Reset selection
+                self.table_combo.setPlaceholderText("Select table")
+            else:
+                 self.table_combo.setPlaceholderText("(No tables found)")
+
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Could not load tables for keyspace '{keyspace_name}':\n{str(e)}")
+            self.table_combo.setPlaceholderText("(Error loading tables)")
+
+    def _load_table_data(self, table_name):
+        """Load data from the selected table."""
+        self.data_tree.clear()
+        self.row_count_label.setText("Rows: 0")
+
+        if not table_name or not self.current_keyspace or not self.session:
+            self.data_tree.setColumnCount(1)
+            self.data_tree.setHeaderLabels(["Row Data"])
+            return
+
+        try:
+            # Ensure the session is using the correct keyspace
+            # This is safer than relying on previous state or manual USE query
+            self.session.set_keyspace(self.current_keyspace)
+
+            # Construct a basic CQL query with a limit
+            # Note: Using f-string here for table name is generally safe as it comes
+            # from metadata, but be cautious with user input in queries.
+            # For production, consider more robust query building if needed.
+            query = f"SELECT * FROM \"{table_name}\" LIMIT 100" # Limit results, quote table name
+            statement = SimpleStatement(query, fetch_size=50) # Set fetch size
+
+            # Execute the query
+            result_set = self.session.execute(statement)
+            rows = list(result_set) # Fetch all rows (up to the limit)
+
+            self.row_count_label.setText(f"Rows: {len(rows)} (limited)")
+
+            if rows:
+                # Get column names from the first row (or result metadata)
+                column_names = rows[0]._fields # Access column names via _fields
+                self.data_tree.setColumnCount(len(column_names))
+                self.data_tree.setHeaderLabels(column_names)
+
+                # Populate the tree
+                for row in rows:
+                    row_values = [str(getattr(row, col, None)) for col in column_names]
+                    row_item = QTreeWidgetItem(row_values)
+                    self.data_tree.addTopLevelItem(row_item)
+
+                # Resize columns to content after populating
+                for i in range(len(column_names)):
+                    self.data_tree.resizeColumnToContents(i)
+
+            else:
+                # No rows found
+                self.data_tree.setColumnCount(1)
+                self.data_tree.setHeaderLabels([f"No data found in {table_name}"])
+
+
+        except InvalidRequest as e:
+             QMessageBox.warning(self, "Query Error", f"Invalid CQL query for table '{table_name}':\n{str(e)}")
+             self.data_tree.setColumnCount(1)
+             self.data_tree.setHeaderLabels(["Query Error"])
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Could not load data from table '{table_name}':\n{str(e)}")
+            self.data_tree.setColumnCount(1)
+            self.data_tree.setHeaderLabels(["Error Loading Data"])
+
+    def _refresh_data(self):
+        """Refresh the currently viewed data."""
+        current_keyspace = self.keyspace_combo.currentText()
+        current_table = self.table_combo.currentText()
+
+        if current_keyspace and self.cluster:
+             self._update_tables_combo(current_keyspace) # Refresh tables first
+             if current_table:
+                 # Restore previous selection if possible
+                 index = self.table_combo.findText(current_table)
+                 if index >= 0:
+                     self.table_combo.setCurrentIndex(index)
+                     # Loading data is triggered by the signal, or call explicitly:
+                     # self._load_table_data(current_table)
+                 else:
+                      self.table_combo.setCurrentIndex(-1)
+                      self.data_tree.clear()
+                      self.row_count_label.setText("Rows: 0")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
