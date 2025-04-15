@@ -2,7 +2,6 @@
 from datetime import date, datetime
 from pymongo import MongoClient
 
-from MongoDB.objects import objects_list
 
 
 class PyMongoConverter:
@@ -110,6 +109,8 @@ class PyMongoConverter:
 
 # Example usage
 if __name__ == "__main__":
+    from objects import objects_list
+
     converter = PyMongoConverter(
         connection_string="mongodb://localhost:27017/",
         db_name="object_db"

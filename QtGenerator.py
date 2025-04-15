@@ -1034,18 +1034,18 @@ class ObjectGeneratorApp(QMainWindow):
 
         try:
             # --- Dynamic Import ---
-            # Assume PyMongoConverter is in MongoDB/main.py relative to this script
+            # Assume PyMongoConverter is in MongoDB/cassandra_converter.py relative to this script
             # You might need to adjust the import path based on your project structure
             try:
-                from MongoDB.main import PyMongoConverter
+                from Converters.mongo_converter import PyMongoConverter
             except ImportError:
                  # Try importing from current directory if MongoDB folder doesn't work
                  try:
-                      from main import PyMongoConverter # If main.py is in the same dir
+                      from main import PyMongoConverter # If cassandra_converter.py is in the same dir
                  except ImportError:
                       QMessageBox.critical(self, "Błąd Importu",
                                           "Nie znaleziono klasy 'PyMongoConverter'.\n"
-                                          "Upewnij się, że plik z konwerterem (np. MongoDB/main.py lub main.py) istnieje.")
+                                          "Upewnij się, że plik z konwerterem (np. MongoDB/cassandra_converter.py lub cassandra_converter.py) istnieje.")
                       return
             # Import pymongo separately to check for its existence too
             import pymongo
@@ -1101,19 +1101,19 @@ class ObjectGeneratorApp(QMainWindow):
 
         try:
             # --- Dynamic Import ---
-            # Assume PyCassandraConverter is in Cassandra/main.py or main.py
+            # Assume PyCassandraConverter is in Cassandra/cassandra_converter.py or cassandra_converter.py
             # Adjust the import path based on your project structure
             try:
                 # Adjust path as needed (e.g., 'Cassandra.converter', 'utils.cassandra_converter')
-                from Cassandra.main import PyCassandraConverter
+                from Converters.cassandra_converter import PyCassandraConverter
             except ImportError:
                 try:
-                    # If main.py is in the same directory or package
+                    # If cassandra_converter.py is in the same directory or package
                     from main import PyCassandraConverter
                 except ImportError:
                     QMessageBox.critical(self, "Błąd Importu",
                                          "Nie znaleziono klasy 'PyCassandraConverter'.\n"
-                                         "Upewnij się, że plik z konwerterem (np. Cassandra/main.py lub main.py) istnieje.")
+                                         "Upewnij się, że plik z konwerterem (np. Cassandra/cassandra_converter.py lub cassandra_converter.py) istnieje.")
                     return
 
             # Import Cassandra driver specifics for error handling
@@ -1197,14 +1197,14 @@ class ObjectGeneratorApp(QMainWindow):
         try:
             # Dynamic import of the Neo4jConverter class
             try:
-                from Neo4j.main import Neo4jConverter
+                from Converters.neo4j_converter import Neo4jConverter
             except ImportError:
                 try:
                     from main import Neo4jConverter  # Try local dir
                 except ImportError:
                     QMessageBox.critical(self, "Błąd Importu",
                                          "Nie znaleziono klasy 'Neo4jConverter'.\n"
-                                         "Upewnij się, że plik z konwerterem (np. Neo4j/main.py lub main.py) istnieje.")
+                                         "Upewnij się, że plik z konwerterem (np. Neo4j/cassandra_converter.py lub cassandra_converter.py) istnieje.")
                     return
 
             # --- Connection Details (adjust as needed) ---

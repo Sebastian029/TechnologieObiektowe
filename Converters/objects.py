@@ -1,5 +1,5 @@
 ﻿from datetime import datetime, timedelta
-from MongoDB.classes import *
+from classes import *
 
 
 
