@@ -641,11 +641,6 @@ class CassandraTab(QWidget):
             # Load keyspaces
             self._load_keyspaces()
 
-        except NoHostAvailable as e:
-            self.connection_status.setText(f"Connection failed: No hosts available")
-            self.connection_status.setStyleSheet("color: red; font-weight: bold;")
-            QMessageBox.critical(self, "Connection Error", f"Failed to connect to Cassandra (NoHostAvailable):\nCould not connect to any of the specified contact points: {', '.join(e.errors.keys())}")
-            self._reset_ui_on_disconnect()
         except Exception as e: # Catch other errors like authentication issues
             self.connection_status.setText(f"Error: {str(e)}")
             self.connection_status.setStyleSheet("color: red; font-weight: bold;")
