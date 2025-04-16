@@ -4,7 +4,7 @@ from neo4j import GraphDatabase
 class Neo4jConverter:
     def __init__(self, uri="bolt://localhost:7687", user="neo4j", password="password"):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        self._saved_nodes = {}  # id(obj) -> Neo4j elementId
+        self._saved_nodes = {}
 
     def close(self):
         self.driver.close()
@@ -96,9 +96,9 @@ class Neo4jConverter:
                 self._create_relationship(obj, value, attr.upper())
 
 if __name__ == "__main__":
-    from objects import objects_list
+    from example_objects import objects_list
 
-    converter = Neo4jConverter(uri="bolt://localhost:7687", user="neo4j", password="password")
+    converter = Neo4jConverter()
     try:
         for obj in objects_list:
             print(f"Saving {obj.__class__.__name__}...")

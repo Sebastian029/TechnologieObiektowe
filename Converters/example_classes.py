@@ -1,10 +1,6 @@
 ﻿from abc import ABC, abstractmethod
-from datetime import date, datetime, timedelta
-from typing import List, Dict, Set, Optional, Union
-
-
-
-
+from datetime import datetime, timedelta
+from typing import List, Dict, Set, Optional
 
 class Person:
     def __init__(self, name: str, email: str, pesel: str):
@@ -163,15 +159,6 @@ def main():
     )
 
     magdalena.borrow_book(python_book, library)
-
-    # print(f"Biblioteka: {library.name}")
-    # print(f"Liczba książek: {len(library.books)}")
-    # print(f"Liczba pracowników: {len(library.employees)}")
-    # print(f"Książki {magdalena.name}: {[book.title for book in magdalena.borrowed_books]}")
-    # print("\nPodsumowanie książek:")
-    # for book in library.books.values():
-    #     print(book.get_summary())
-    object_reader.analyze_object(ebook)
 
 if __name__ == "__main__":
     main()
