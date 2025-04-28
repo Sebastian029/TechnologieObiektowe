@@ -17,11 +17,12 @@ class Neo4jConverter:
         # Używamy nazwy klasy jako etykiety
         label = obj.__class__.__name__
         
+        properties_str = ", ".join(f"{k}={repr(v)}" for k, v in vars(obj).items() if isinstance(v, (str, int, float, bool, type(None), date, datetime)))
+    
         properties = {
-            '_python_type': label,  # Zawsze dodajemy typ Pythona
-            '_repr': str(obj)      # Reprezentacja tekstowa
+        '_python_type': label,
+        '_repr': f"{label}({properties_str})",  # Auto-repr
         }
-        
         # Dodajemy właściwości obiektu
         for attr, value in vars(obj).items():
             if isinstance(value, (str, int, float, bool, type(None), date, datetime)):

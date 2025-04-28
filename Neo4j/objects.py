@@ -38,4 +38,13 @@ from classes import *
 #
 # # Final list for Neo4j conversion
 # objects_list = [library, library2]
-objects_list = [Dog("Burek", "Labrador")]
+# objects_list = [Dog("Burek", "Labrador")]
+
+burek = Pies("Burek", "Labrador")
+azor = Pies("Azor", "Owczarek")
+
+moja_szkolka = SzkolkaDlaPsow()
+moja_szkolka.dodaj_psa(burek)
+moja_szkolka.dodaj_psa(azor)
+
+objects_list = [moja_szkolka]

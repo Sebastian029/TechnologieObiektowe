@@ -103,72 +103,101 @@ class ClassDiagramEditor(QMainWindow):
         code_lines = []
 
         # --- Imports ---
-        # Collect necessary imports based on generated hints
-        imports = {"Any", "Optional", "List", "Dict"} # Start with potential ones
-        # Check used types later if needed for more precision
+        imports = {"Any", "Optional", "List", "Dict"}
         code_lines.append(f"from typing import {', '.join(sorted(list(imports)))}")
         code_lines.append("\n")
 
         # --- Class Definitions ---
         code_lines.append("# --- Class Definitions ---")
-        # Process classes, potentially sorting for consistency (e.g., alphabetically)
-        # Or process in an order respecting inheritance (parents before children) - more complex
-        # Let's process alphabetically for now. Python handles definition order flexibly.
-        for class_name in sorted(self.classes.keys()):
+
+        sorted_classes = self._sort_classes_by_inheritance()
+
+        for class_name in sorted_classes:
+            if class_name not in self.classes:
+                continue
+
             class_data = self.classes[class_name]
             parent_name = class_data.get('inherits')
             compositions = class_data.get('compositions', [])
+            own_fields = class_data.get('fields', [])
 
-            # Determine inheritance string
+            # Pobierz pola klasy bazowej jeśli istnieje
+            parent_fields = []
+            parent_compositions = []
+            if parent_name and parent_name in self.classes:
+                parent_fields = self.classes[parent_name].get('fields', [])
+                parent_compositions = self.classes[parent_name].get('compositions', [])
+
+            # Dziedziczenie
             parent_str = f"({parent_name})" if parent_name else "(object)"
             code_lines.append(f"\nclass {class_name}{parent_str}:")
 
-            # --- Generate __init__ ---
-            # Get own fields + fields representing compositions defined HERE
-            own_fields = class_data.get('fields', [])
-            init_param_fields = []
-            for field in own_fields:
-                 is_comp = self._is_composition_field(field['name'], field['type'], compositions)
-                 # Include own fields that are NOT compositions managed by parent classes
-                 # AND own fields that ARE compositions defined in *this* class
-                 # Simplified: Include all own fields. Composition handled by type hint.
-                 init_param_fields.append(field)
+            # Funkcja pomocnicza do podziału pól na wymagane i opcjonalne
+            def split_fields(fields, compositions_list):
+                required = []
+                optional = []
+                for f in fields:
+                    is_comp = self._is_composition_field(f['name'], f['type'], compositions_list)
+                    if is_comp:
+                        optional.append(f)
+                    else:
+                        required.append(f)
+                return required, optional
 
+            # Podziel pola klasy bazowej i własne
+            parent_required, parent_optional = split_fields(parent_fields, parent_compositions)
+            own_required, own_optional = split_fields(own_fields, compositions)
 
-            if not init_param_fields and not parent_name: # No params and no inheritance
-                 code_lines.append("    pass")
-            else:
-                init_params = ['self']
-                init_assignments = []
+            # Buduj listę parametrów __init__
+            init_params = ['self']
 
-                # Generate parameters and assignments for own fields
-                for field in sorted(init_param_fields, key=lambda x: x['name']):
-                    field_name = field['name']
-                    field_type = field['type']
-                    is_comp = self._is_composition_field(field_name, field_type, compositions)
-                    
-                    type_hint = self._get_type_hint_str(field_type, is_comp)
-                    # Make composition parameters optional in init
-                    default_val = " = None" if is_comp else "" 
-                    init_params.append(f"{field_name}: {type_hint}{default_val}")
-                    init_assignments.append(f"        self.{field_name} = {field_name}")
+            # Najpierw pola wymagane klasy bazowej
+            for f in sorted(parent_required, key=lambda x: x['name']):
+                type_hint = self._get_type_hint_str(f['type'], False)
+                init_params.append(f"{f['name']}: {type_hint}")
 
-                code_lines.append(f"    def __init__({', '.join(init_params)}):")
+            # Pola wymagane klasy potomnej
+            for f in sorted(own_required, key=lambda x: x['name']):
+                type_hint = self._get_type_hint_str(f['type'], False)
+                init_params.append(f"{f['name']}: {type_hint}")
 
-                # Call super().__init__ if inheriting
-                # Simplification: Assume parent __init__ needs no args or handles it
-                # A more robust solution would analyze parent's required init args
-                if parent_name:
-                    code_lines.append(f"        super().__init__() # TODO: Pass necessary arguments to {parent_name}'s __init__ if needed")
-                
-                # Add assignments
-                if init_assignments:
-                    code_lines.extend(init_assignments)
-                elif not parent_name: # No assignments and no super() call
-                     code_lines.append("        pass")
+            # Pola opcjonalne klasy bazowej
+            for f in sorted(parent_optional, key=lambda x: x['name']):
+                type_hint = self._get_type_hint_str(f['type'], True)
+                init_params.append(f"{f['name']}: {type_hint} = None")
 
+            # Pola opcjonalne klasy potomnej
+            for f in sorted(own_optional, key=lambda x: x['name']):
+                type_hint = self._get_type_hint_str(f['type'], True)
+                init_params.append(f"{f['name']}: {type_hint} = None")
 
-            code_lines.append("") # Blank line after class
+            # Jeśli brak parametrów i brak rodzica - daj pass
+            if len(init_params) == 1 and not parent_name:
+                code_lines.append("    pass")
+                continue
+
+            code_lines.append(f"    def __init__({', '.join(init_params)}):")
+
+            # Wywołanie super().__init__ z argumentami klasy bazowej
+            if parent_name:
+                super_args = []
+                for f in sorted(parent_required, key=lambda x: x['name']):
+                    super_args.append(f"{f['name']}")
+                for f in sorted(parent_optional, key=lambda x: x['name']):
+                    super_args.append(f"{f['name']}={f['name']}")
+                code_lines.append(f"        super().__init__({', '.join(super_args)})")
+
+            # Przypisania własnych pól klasy (pomijamy pola bazowe)
+            parent_field_names = {f['name'] for f in parent_fields} if parent_name else set()
+            for f in sorted(own_required + own_optional, key=lambda x: x['name']):
+                if f['name'] not in parent_field_names:
+                    code_lines.append(f"        self.{f['name']} = {f['name']}")
+
+            # Jeśli brak przypisań i brak super(), daj pass
+            if not own_required and not own_optional and not parent_name:
+                code_lines.append("        pass")
+
+            code_lines.append("")  # Pusta linia po klasie
 
         # --- Object Instantiation ---
         code_lines.append("\n# --- Object Instantiation ---")
@@ -176,13 +205,8 @@ class ClassDiagramEditor(QMainWindow):
         code_lines.append("if __name__ == '__main__':")
 
         if not self.objects:
-             code_lines.append("    pass # No objects defined")
+            code_lines.append("    pass # No objects defined")
         else:
-            # Instantiate objects. Order might be important for compositions!
-            # A simple approach: Generate in alphabetical order. User might need to reorder.
-            # A better approach (more complex): Topological sort based on composition references.
-            
-            # Let's use alphabetical order for simplicity first.
             object_creation_lines = []
             for obj_name in sorted(self.objects.keys()):
                 obj_data = self.objects[obj_name]
@@ -190,60 +214,81 @@ class ClassDiagramEditor(QMainWindow):
                 attributes = obj_data['attributes']
 
                 if class_name not in self.classes:
-                     object_creation_lines.append(f"    # Skipping object '{obj_name}': Class '{class_name}' not found.")
-                     continue
+                    object_creation_lines.append(f"    # Skipping object '{obj_name}': Class '{class_name}' not found.")
+                    continue
 
-                # Determine required __init__ parameters for the class
                 class_data = self.classes[class_name]
-                own_fields = class_data.get('fields', [])
-                compositions = class_data.get('compositions', [])
-                init_param_names = set()
-                for field in own_fields:
-                     # Parameters are needed for own fields
-                     init_param_names.add(field['name'])
-                     
-                # Build arguments list for the constructor call
-                init_args = []
-                # Iterate through the sorted list of expected param names for consistent order
-                for param_name in sorted(list(init_param_names)): 
-                    value = attributes.get(param_name) # Get value from object data
+                # Pobierz wszystkie pola z łańcucha dziedziczenia
+                all_fields = []
+                parent = class_data.get('inherits')
+                parents_chain = []
+                while parent:
+                    if parent in self.classes:
+                        parents_chain.insert(0, self.classes[parent])
+                        parent = self.classes[parent].get('inherits')
+                    else:
+                        break
+                for pcd in parents_chain:
+                    all_fields.extend(pcd.get('fields', []))
+                all_fields.extend(class_data.get('fields', []))
 
-                    # Format the value for Python code
-                    formatted_value = "None" # Default if not found or None
+                init_param_names = [f['name'] for f in all_fields]
+
+                init_args = []
+                for param_name in init_param_names:
+                    value = attributes.get(param_name)
+                    formatted_value = "None"
                     if value is not None:
-                         # Check if the value is a name of another object (composition)
-                         is_ref = value in self.objects 
-                         if isinstance(value, str) and not is_ref:
-                             formatted_value = repr(value) # Use repr for strings
-                         elif isinstance(value, (int, float, bool)):
-                             formatted_value = str(value) # Numbers/bools directly
-                         elif is_ref:
-                             formatted_value = value # Use the object variable name directly
-                         else:
-                             # For lists, dicts, etc., use repr() as a fallback
-                             # This might not be perfect for complex structures
-                             try:
-                                 formatted_value = repr(value)
-                             except Exception:
-                                 formatted_value = f"'<Error formatting value for {param_name}>'"
-                                 
+                        is_ref = value in self.objects
+                        if isinstance(value, str) and not is_ref:
+                            formatted_value = repr(value)
+                        elif isinstance(value, (int, float, bool)):
+                            formatted_value = str(value)
+                        elif is_ref:
+                            formatted_value = value
+                        else:
+                            try:
+                                formatted_value = repr(value)
+                            except Exception:
+                                formatted_value = f"'<Error formatting value for {param_name}>'"
                     init_args.append(f"{param_name}={formatted_value}")
 
                 object_creation_lines.append(f"    {obj_name} = {class_name}({', '.join(init_args)})")
-            
+
             code_lines.extend(object_creation_lines)
-            
-            # --- Optional: Add print statements or checks ---
+
             code_lines.append("\n    # --- Example Usage (Optional) ---")
-            code_lines.append("    # You can add code here to interact with the created objects")
-            # Example: Print attributes of the first object if any exist
             if self.objects:
-                 first_obj_name = sorted(self.objects.keys())[0]
-                 code_lines.append(f"    # print(vars({first_obj_name}))")
+                first_obj_name = sorted(self.objects.keys())[0]
+                code_lines.append(f"    # print(vars({first_obj_name}))")
             code_lines.append("    pass")
 
-
         return "\n".join(code_lines)
+
+
+    def _sort_classes_by_inheritance(self) -> List[str]:
+        """Sorts classes so that parent classes come before child classes."""
+        class_order = []
+        remaining_classes = set(self.classes.keys())
+        
+        while remaining_classes:
+            # Find classes that have no parents or whose parents are already processed
+            ready_classes = [
+                cls for cls in remaining_classes
+                if not self.classes[cls].get('inherits') or 
+                self.classes[cls]['inherits'] not in remaining_classes
+            ]
+            
+            if not ready_classes:
+                # Circular dependency - pick one arbitrarily
+                cls = next(iter(remaining_classes))
+                ready_classes = [cls]
+                print(f"Warning: Circular inheritance detected involving {cls}")
+                
+            class_order.extend(sorted(ready_classes))
+            remaining_classes -= set(ready_classes)
+        
+        return class_order
 
     def _save_python_code(self):
         """Generates Python code and prompts the user to save it to a file."""

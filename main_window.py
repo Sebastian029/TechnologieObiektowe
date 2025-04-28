@@ -1,17 +1,14 @@
 import sys
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QTextEdit, QPushButton, QMessageBox)
-from PyQt6.QtCore import Qt
-
-from MongoDB.main import PyMongoConverter  # Zakładam, że masz ten plik w tym samym katalogu
-from Neo4j.main import Neo4jConverter  # Zakładam, że masz ten plik w tym samym katalogu
+from MongoDB.main import PyMongoConverter  
+from Neo4j.main import Neo4jConverter  
 
 class UniversalConverterApp(QWidget):
     def __init__(self):
         super().__init__()
         self.init_ui()
         
-        # Inicjalizacja konwerterów (używamy Twoich klas bez zmian)
         self.mongo_converter = PyMongoConverter()
         self.neo4j_converter = Neo4jConverter()
     
@@ -21,19 +18,16 @@ class UniversalConverterApp(QWidget):
         
         layout = QVBoxLayout()
         
-        # Sekcja kodu klasy
         layout.addWidget(QLabel("Class Code:"))
         self.class_code_edit = QTextEdit()
         self.class_code_edit.setPlaceholderText("Paste your class definition here...")
         layout.addWidget(self.class_code_edit)
         
-        # Sekcja obiektów
         layout.addWidget(QLabel("Objects Code (objects_list):"))
         self.objects_code_edit = QTextEdit()
         self.objects_code_edit.setPlaceholderText("Paste your objects_list definition here...")
         layout.addWidget(self.objects_code_edit)
         
-        # Przyciski akcji
         button_layout = QHBoxLayout()
         
         self.mongo_button = QPushButton("Save to MongoDB")
@@ -55,9 +49,7 @@ class UniversalConverterApp(QWidget):
         """Wykonuje kod i zwraca objects_list"""
         local_vars = {}
         try:
-            # Wykonaj kod klasy
             exec(self.class_code_edit.toPlainText(), globals(), local_vars)
-            # Wykonaj kod obiektów
             exec(self.objects_code_edit.toPlainText(), globals(), local_vars)
             
             if 'objects_list' not in local_vars:
@@ -98,9 +90,6 @@ class UniversalConverterApp(QWidget):
         self.mongo_converter.close()
         self.neo4j_converter.close()
         event.accept()
-
-# Tutaj wklej swoje oryginalne klasy PyMongoConverter i Neo4jConverter
-# (bez żadnych zmian, dokładnie tak jak je podałeś)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
