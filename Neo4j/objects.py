@@ -38,6 +38,4 @@ from classes import *
 #
 # # Final list for Neo4j conversion
 # objects_list = [library, library2]
-book = Book("tytul")
-library = Library("biblioteka", book)
-objects_list = [library, book]
+objects_list = [Dog("Burek", "Labrador")]
