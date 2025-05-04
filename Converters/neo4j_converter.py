@@ -9,35 +9,32 @@ class Neo4jConverter:
     def close(self):
         self.driver.close()
 
-    def _serialize_value(self, value):
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            return value
-        elif isinstance(value, (date, datetime)):
-            return value.isoformat()
-        elif isinstance(value, complex):
-            return str(value)
-        elif isinstance(value, (list, tuple, set)):
-            return [self._serialize_value(v) for v in value]
-        elif isinstance(value, dict):
-            return {k: self._serialize_value(v) for k, v in value.items()}
-        return str(value)
-
     def _create_node(self, obj):
         obj_id = id(obj)
         if obj_id in self._saved_nodes:
-            return self._saved_nodes[obj_id]  # Avoid duplicates
+            return self._saved_nodes[obj_id]
 
+        # Używamy nazwy klasy jako etykiety
         label = obj.__class__.__name__
-        properties = {}
+        
+        properties_str = ", ".join(f"{k}={repr(v)}" for k, v in vars(obj).items() if isinstance(v, (str, int, float, bool, type(None), date, datetime)))
+    
+        properties = {
+        '_python_type': label,
+        '_repr': f"{label}({properties_str})",  # Auto-repr
+        }
+        # Dodajemy właściwości obiektu
         for attr, value in vars(obj).items():
-            if self._is_basic_type(value):
-                properties[attr] = self._serialize_value(value)
+            if isinstance(value, (str, int, float, bool, type(None), date, datetime)):
+                properties[attr] = value
 
-        prop_keys = ", ".join(f"{k}: ${k}" for k in properties)
-        query = f"CREATE (n:{label} {{{prop_keys}}}) RETURN elementId(n)"
-
+        query = f"""
+        CREATE (n:{label} $props)
+        RETURN elementId(n)
+        """
+        
         with self.driver.session() as session:
-            result = session.run(query, **properties)
+            result = session.run(query, props=properties)
             element_id = result.single()[0]
             self._saved_nodes[obj_id] = element_id
             return element_id
@@ -48,53 +45,41 @@ class Neo4jConverter:
         if not from_id or not to_id:
             return
 
-        query = f"""
+        query = """
         MATCH (a) WHERE elementId(a) = $from_id
         MATCH (b) WHERE elementId(b) = $to_id
-        MERGE (a)-[r:HAS_{rel_type}]->(b)
-        """
+        MERGE (a)-[r:%s]->(b)
+        """ % rel_type
+        
         with self.driver.session() as session:
             session.run(query, from_id=from_id, to_id=to_id)
 
-    def _is_basic_type(self, val):
-        return isinstance(val, (str, int, float, bool, type(None), datetime, date))
-
     def save(self, obj):
         self._saved_nodes = {}
-        self._recursive_save(obj)
+        self._save_object(obj)
 
-    def _recursive_save(self, obj, parent=None, rel_type=None, processed=None):
+    def _save_object(self, obj, processed=None):
         if processed is None:
             processed = set()
+        
         obj_id = id(obj)
         if obj_id in processed:
             return
         processed.add(obj_id)
 
-        if obj_id in self._saved_nodes:
-            if parent and rel_type:
-                self._create_relationship(parent, obj, rel_type)
-            return
-
+        # Najpierw tworzymy węzeł
         self._create_node(obj)
 
+        # Potem przetwarzamy zagnieżdżone obiekty
         for attr, value in vars(obj).items():
-            if self._is_basic_type(value):
-                continue
-            elif isinstance(value, (list, set, tuple)):
+            if hasattr(value, "__dict__"):  # Dla obiektów
+                self._save_object(value, processed)
+                self._create_relationship(obj, value, f"HAS_{attr.upper()}")
+            elif isinstance(value, (list, tuple, set)):  # Dla kolekcji
                 for item in value:
-                    if not self._is_basic_type(item):
-                        self._recursive_save(item, obj, attr.upper(), processed)
-                        self._create_relationship(obj, item, attr.upper())
-            elif isinstance(value, dict):
-                for item in value.values():
-                    if not self._is_basic_type(item):
-                        self._recursive_save(item, obj, attr.upper(), processed)
-                        self._create_relationship(obj, item, attr.upper())
-            elif hasattr(value, "__dict__"):
-                self._recursive_save(value, obj, attr.upper(), processed)
-                self._create_relationship(obj, value, attr.upper())
-
+                    if hasattr(item, "__dict__"):
+                        self._save_object(item, processed)
+                        self._create_relationship(obj, item, f"HAS_{attr.upper()}")
 if __name__ == "__main__":
     from example_objects import objects_list
 
