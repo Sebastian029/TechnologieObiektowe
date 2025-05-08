@@ -87,14 +87,10 @@ class ClassDiagramEditor(QMainWindow):
         if not self.classes:
             return ""
 
-
         # --- Imports ---
         imports = {"Any", "Optional", "List", "Dict"}
-        code_lines.append(f"from typing import {', '.join(sorted(list(imports)))}")
+        code_lines.append(f"from typing import {', '.join(sorted(imports))}")
         code_lines.append("\n")
-
-        # --- Class Definitions ---
-        code_lines.append("# --- Class Definitions ---")
 
         sorted_classes = self._sort_classes_by_inheritance()
 
@@ -107,81 +103,90 @@ class ClassDiagramEditor(QMainWindow):
             compositions = class_data.get('compositions', [])
             own_fields = class_data.get('fields', [])
 
-            # Pobierz pola klasy bazowej jeśli istnieje
-            parent_fields = []
-            parent_compositions = []
-            if parent_name and parent_name in self.classes:
-                parent_fields = self.classes[parent_name].get('fields', [])
-                parent_compositions = self.classes[parent_name].get('compositions', [])
-
-            # Dziedziczenie
-            parent_str = f"({parent_name})" if parent_name else "(object)"
+            # --- Inheritance declaration ---
+            parent_str = f"({parent_name})" if parent_name else ""
             code_lines.append(f"\nclass {class_name}{parent_str}:")
 
-            # Funkcja pomocnicza do podziału pól na wymagane i opcjonalne
-            def split_fields(fields, compositions_list):
-                required = []
-                optional = []
-                for f in fields:
-                    is_comp = self._is_composition_field(f['name'], f['type'], compositions_list)
-                    if is_comp:
-                        optional.append(f)
-                    else:
-                        required.append(f)
-                return required, optional
+            # --- Collect all fields for this class ---
+            def get_fields(cls):
+                """Returns all fields for a class"""
+                if cls not in self.classes:
+                    return []
+                return self.classes[cls].get('fields', [])
 
-            # Podziel pola klasy bazowej i własne
-            parent_required, parent_optional = split_fields(parent_fields, parent_compositions)
-            own_required, own_optional = split_fields(own_fields, compositions)
+            # Get all fields through inheritance chain
+            all_fields = []
+            current_class = class_name
+            while current_class in self.classes:
+                all_fields.extend(get_fields(current_class))
+                current_class = self.classes[current_class].get('inherits')
 
-            # Buduj listę parametrów __init__
-            init_params = ['self']
+            # Remove duplicates (child fields override parent fields)
+            unique_fields = {}
+            for field in reversed(all_fields):
+                unique_fields[field['name']] = field
+            all_fields = list(unique_fields.values())
 
-            # Najpierw pola wymagane klasy bazowej
-            for f in sorted(parent_required, key=lambda x: x['name']):
-                type_hint = self._get_type_hint_str(f['type'], False)
-                init_params.append(f"{f['name']}: {type_hint}")
+            # --- Separate required and optional fields ---
+            required_fields = []
+            optional_fields = []
+            for field in all_fields:
+                if self._is_composition_field(field['name'], field['type'], compositions):
+                    optional_fields.append(field)
+                else:
+                    required_fields.append(field)
 
-            # Pola wymagane klasy potomnej
-            for f in sorted(own_required, key=lambda x: x['name']):
-                type_hint = self._get_type_hint_str(f['type'], False)
-                init_params.append(f"{f['name']}: {type_hint}")
-
-            # Pola opcjonalne klasy bazowej
-            for f in sorted(parent_optional, key=lambda x: x['name']):
-                type_hint = self._get_type_hint_str(f['type'], True)
-                init_params.append(f"{f['name']}: {type_hint} = None")
-
-            # Pola opcjonalne klasy potomnej
-            for f in sorted(own_optional, key=lambda x: x['name']):
-                type_hint = self._get_type_hint_str(f['type'], True)
-                init_params.append(f"{f['name']}: {type_hint} = None")
-
-            # Jeśli brak parametrów i brak rodzica - daj pass
-            if len(init_params) == 1 and not parent_name:
+            # --- Generate __init__ method ---
+            if not required_fields and not optional_fields and not parent_name:
                 code_lines.append("    pass")
                 continue
 
+            # Build parameter list
+            init_params = ['self']
+            
+            # Required parameters
+            for field in sorted(required_fields, key=lambda x: x['name']):
+                type_hint = self._get_type_hint_str(field['type'], False)
+                init_params.append(f"{field['name']}: {type_hint}")
+
+            # Optional parameters
+            for field in sorted(optional_fields, key=lambda x: x['name']):
+                type_hint = self._get_type_hint_str(field['type'], True)
+                init_params.append(f"{field['name']}: {type_hint} = None")
+
             code_lines.append(f"    def __init__({', '.join(init_params)}):")
 
-            # Wywołanie super().__init__ z argumentami klasy bazowej
+            # Super() call for inheritance
             if parent_name:
-                super_args = []
-                for f in sorted(parent_required, key=lambda x: x['name']):
-                    super_args.append(f"{f['name']}")
-                for f in sorted(parent_optional, key=lambda x: x['name']):
-                    super_args.append(f"{f['name']}={f['name']}")
-                code_lines.append(f"        super().__init__({', '.join(super_args)})")
+                # Get all fields from parent that are not compositions
+                parent_fields = []
+                current = parent_name
+                while current in self.classes:
+                    for field in self.classes[current].get('fields', []):
+                        if not self._is_composition_field(field['name'], field['type'], 
+                                                    self.classes[current].get('compositions', [])):
+                            parent_fields.append(field)
+                    current = self.classes[current].get('inherits')
+                
+                # Remove duplicates
+                unique_parent_fields = {}
+                for field in reversed(parent_fields):
+                    unique_parent_fields[field['name']] = field
+                parent_fields = list(unique_parent_fields.values())
+                
+                # Prepare arguments for super()
+                super_args = [f"{f['name']}" for f in sorted(parent_fields, key=lambda x: x['name'])]
+                if super_args:
+                    code_lines.append(f"        super().__init__({', '.join(super_args)})")
 
-            # Przypisania własnych pól klasy (pomijamy pola bazowe)
-            parent_field_names = {f['name'] for f in parent_fields} if parent_name else set()
-            for f in sorted(own_required + own_optional, key=lambda x: x['name']):
-                if f['name'] not in parent_field_names:
-                    code_lines.append(f"        self.{f['name']} = {f['name']}")
+            # Field assignments
+            for field in sorted(all_fields, key=lambda x: x['name']):
+                # Only assign fields declared in this class
+                if field in self.classes[class_name].get('fields', []):
+                    code_lines.append(f"        self.{field['name']} = {field['name']}")
 
-            # Jeśli brak przypisań i brak super(), daj pass
-            code_lines.append("    pass # No objects defined")
         return "\n".join(code_lines)
+
     def _sort_classes_by_inheritance(self) -> List[str]:
         """Sorts classes so that parent classes come before child classes."""
         class_order = []

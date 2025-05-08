@@ -1,21 +1,24 @@
 from typing import Any, Dict, List, Optional
 
 
-# --- Class Definitions ---
 
-class Nowa(object):
-    def __init__(self, klasa: str):
-        self.klasa = klasa
-    pass # No objects defined
+class K1:
+    def __init__(self, p1: str, p11: str, k2_obj: Optional['K2'] = None):
+        self.k2_obj = k2_obj
+        self.p1 = p1
+        self.p11 = p11
 
-class Nowa2(Nowa):
-    def __init__(self, klasa: str, klasa2: str):
-        super().__init__(klasa)
-        self.klasa2 = klasa2
-    pass # No objects defined
+class K2(K1):
+    def __init__(self, k2_obj: 'K2', p1: str, p11: str, p2: str):
+        super().__init__(p1, p11)
+        self.p2 = p2
 
-class Nowa3(Nowa2):
-    def __init__(self, klasa2: str, klasa3: str):
-        super().__init__(klasa2)
-        self.klasa3 = klasa3
-    pass # No objects defined
+class K4(K1):
+    def __init__(self, k2_obj: 'K2', p1: str, p11: str, p4: str):
+        super().__init__(p1, p11)
+        self.p4 = p4
+
+class K3(K2):
+    def __init__(self, k2_obj: 'K2', p1: str, p11: str, p2: str, p3: str):
+        super().__init__(p1, p11, p2)
+        self.p3 = p3
