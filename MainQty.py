@@ -107,27 +107,10 @@ class ClassDiagramEditor(QMainWindow):
             parent_str = f"({parent_name})" if parent_name else ""
             code_lines.append(f"\nclass {class_name}{parent_str}:")
 
-            # --- Collect all fields for this class ---
-            def get_fields(cls):
-                """Returns all fields for a class"""
-                if cls not in self.classes:
-                    return []
-                return self.classes[cls].get('fields', [])
+            # Get all fields for this class including inherited
+            all_fields = self._get_all_fields_for_code_generation(class_name)
 
-            # Get all fields through inheritance chain
-            all_fields = []
-            current_class = class_name
-            while current_class in self.classes:
-                all_fields.extend(get_fields(current_class))
-                current_class = self.classes[current_class].get('inherits')
-
-            # Remove duplicates (child fields override parent fields)
-            unique_fields = {}
-            for field in reversed(all_fields):
-                unique_fields[field['name']] = field
-            all_fields = list(unique_fields.values())
-
-            # --- Separate required and optional fields ---
+            # Separate fields into required and optional (compositions)
             required_fields = []
             optional_fields = []
             for field in all_fields:
@@ -141,51 +124,87 @@ class ClassDiagramEditor(QMainWindow):
                 code_lines.append("    pass")
                 continue
 
-            # Build parameter list
+            # Build parameter list - first required, then optional, then new fields
             init_params = ['self']
             
-            # Required parameters
-            for field in sorted(required_fields, key=lambda x: x['name']):
+            # 1. Required parameters from parent classes first
+            parent_required = []
+            if parent_name:
+                parent_all = self._get_all_fields_for_code_generation(parent_name)
+                parent_required = [f for f in parent_all if not self._is_composition_field(f['name'], f['type'], 
+                                            self.classes[parent_name].get('compositions', []))]
+            
+            # Add parent required fields first to maintain order
+            for field in parent_required:
+                if field['name'] in [f['name'] for f in required_fields]:
+                    type_hint = self._get_type_hint_str(field['type'], False)
+                    init_params.append(f"{field['name']}: {type_hint}")
+
+            # 2. Then new required fields from current class
+            current_required = [f for f in required_fields if f['name'] not in [p['name'] for p in parent_required]]
+            for field in sorted(current_required, key=lambda x: x['name']):
                 type_hint = self._get_type_hint_str(field['type'], False)
                 init_params.append(f"{field['name']}: {type_hint}")
 
-            # Optional parameters
-            for field in sorted(optional_fields, key=lambda x: x['name']):
+            # 3. Optional parameters (compositions) from parent
+            parent_optional = []
+            if parent_name:
+                parent_all = self._get_all_fields_for_code_generation(parent_name)
+                parent_optional = [f for f in parent_all if self._is_composition_field(f['name'], f['type'], 
+                                            self.classes[parent_name].get('compositions', []))]
+            
+            for field in parent_optional:
+                if field['name'] in [f['name'] for f in optional_fields]:
+                    type_hint = self._get_type_hint_str(field['type'], True)
+                    init_params.append(f"{field['name']}: {type_hint} = None")
+
+            # 4. Then new optional fields from current class
+            current_optional = [f for f in optional_fields if f['name'] not in [p['name'] for p in parent_optional]]
+            for field in sorted(current_optional, key=lambda x: x['name']):
                 type_hint = self._get_type_hint_str(field['type'], True)
                 init_params.append(f"{field['name']}: {type_hint} = None")
 
             code_lines.append(f"    def __init__({', '.join(init_params)}):")
 
-            # Super() call for inheritance
+            # Super() call - pass parameters in correct order
             if parent_name:
-                # Get all fields from parent that are not compositions
-                parent_fields = []
-                current = parent_name
-                while current in self.classes:
-                    for field in self.classes[current].get('fields', []):
-                        if not self._is_composition_field(field['name'], field['type'], 
-                                                    self.classes[current].get('compositions', [])):
-                            parent_fields.append(field)
-                    current = self.classes[current].get('inherits')
+                parent_all = self._get_all_fields_for_code_generation(parent_name)
+                super_args = []
                 
-                # Remove duplicates
-                unique_parent_fields = {}
-                for field in reversed(parent_fields):
-                    unique_parent_fields[field['name']] = field
-                parent_fields = list(unique_parent_fields.values())
+                # Pass all parameters that exist in parent, in parent's order
+                for field in parent_all:
+                    param_name = field['name']
+                    # Check if this parameter exists in current class's init
+                    if any(p.split(':')[0].strip() == param_name for p in init_params[1:]):
+                        super_args.append(param_name)
                 
-                # Prepare arguments for super()
-                super_args = [f"{f['name']}" for f in sorted(parent_fields, key=lambda x: x['name'])]
                 if super_args:
                     code_lines.append(f"        super().__init__({', '.join(super_args)})")
 
-            # Field assignments
-            for field in sorted(all_fields, key=lambda x: x['name']):
-                # Only assign fields declared in this class
-                if field in self.classes[class_name].get('fields', []):
+            # Field assignments - only for fields declared in this class
+            for field in sorted(own_fields, key=lambda x: x['name']):
+                if not self._is_composition_field(field['name'], field['type'], compositions) or \
+                field['name'] in [f['name'] for f in own_fields]:
                     code_lines.append(f"        self.{field['name']} = {field['name']}")
 
         return "\n".join(code_lines)
+
+    def _get_all_fields_for_code_generation(self, class_name: str) -> List[Dict[str, Any]]:
+        """Gets all fields for code generation, handling inheritance properly"""
+        fields = []
+        current_class = class_name
+        
+        while current_class in self.classes:
+            # Add fields in reverse order to allow child fields to override parent fields
+            fields.extend(reversed(self.classes[current_class].get('fields', [])))
+            current_class = self.classes[current_class].get('inherits')
+        
+        # Remove duplicates, keeping the first occurrence (child fields override parent)
+        unique_fields = {}
+        for field in reversed(fields):
+            unique_fields[field['name']] = field
+        
+        return list(unique_fields.values())
 
     def _sort_classes_by_inheritance(self) -> List[str]:
         """Sorts classes so that parent classes come before child classes."""
@@ -542,28 +561,72 @@ class ClassDiagramEditor(QMainWindow):
              QMessageBox.information(self,"Info", f"Nie znaleziono własnego pola o nazwie '{field_name}' do usunięcia.")
 
 
+    def _check_reverse_inheritance(self, source: str, target: str) -> bool:
+        """Sprawdza czy target już dziedziczy (bezpośrednio lub pośrednio) od source"""
+        current = target
+        while current in self.classes:
+            if current == source:
+                return True
+            current = self.classes[current].get('inherits')
+        return False
+
+    def _check_composition_cycle(self, source: str, target: str) -> bool:
+        """Sprawdza czy dodanie kompozycji stworzyłoby cykl"""
+        to_check = [target]
+        visited = set()
+        
+        while to_check:
+            current = to_check.pop()
+            if current == source:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            # Sprawdzamy kompozycje i dziedziczenie
+            if current in self.classes:
+                to_check.extend(self.classes[current].get('compositions', []))
+                parent = self.classes[current].get('inherits')
+                if parent:
+                    to_check.append(parent)
+        return False
+
     def add_relation(self):
         """Dodaje relację między klasami w edytorze."""
-        if not self.selected_class_editor: return
+        if not self.selected_class_editor:
+            return
 
         target_class = self.editor_relation_target_combo.currentText()
         if not target_class:
-             QMessageBox.warning(self, "Błąd", "Nie wybrano klasy docelowej relacji.")
-             return
+            QMessageBox.warning(self, "Błąd", "Nie wybrano klasy docelowej relacji.")
+            return
 
         relation_type = self.editor_relation_type_combo.currentText()
         source_class = self.selected_class_editor
         source_data = self.classes[source_class]
 
+        # Blokada samodziedziczenia
+        if source_class == target_class:
+            QMessageBox.warning(self, "Błąd", "Klasa nie może mieć relacji z samą sobą!")
+            return
+
         if relation_type == "Dziedziczenie":
+            # Sprawdź czy nie tworzymy cyklu
+            if self._check_reverse_inheritance(source_class, target_class):
+                QMessageBox.warning(self, "Błąd", f"Nie można dziedziczyć po '{target_class}' - tworzyłoby to cykl!")
+                return
+                
             if source_data['inherits'] and source_data['inherits'] != target_class:
-                reply = QMessageBox.question(self, "Zmiana dziedziczenia",
-                                     f"Klasa '{source_class}' już dziedziczy po '{source_data['inherits']}'. Zmienić na '{target_class}'?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-                if reply == QMessageBox.StandardButton.No: return
+                reply = QMessageBox.question(
+                    self, "Zmiana dziedziczenia",
+                    f"Klasa '{source_class}' już dziedziczy po '{source_data['inherits']}'. Zmienić na '{target_class}'?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+                    QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
             elif source_data['inherits'] == target_class:
-                 QMessageBox.information(self,"Info", f"Klasa '{source_class}' już dziedziczy po '{target_class}'.")
-                 return
+                QMessageBox.information(self, "Info", f"Klasa '{source_class}' już dziedziczy po '{target_class}'.")
+                return
 
             if self.check_inheritance_cycle(source_class, target_class):
                 QMessageBox.warning(self, "Błąd cyklu", f"Ustawienie dziedziczenia po '{target_class}' utworzyłoby cykl!")
@@ -573,20 +636,20 @@ class ClassDiagramEditor(QMainWindow):
             QMessageBox.information(self, "Sukces", f"Ustawiono dziedziczenie: {source_class} -> {target_class}")
 
         elif relation_type == "Kompozycja":
-            if target_class in source_data['compositions']:
-                QMessageBox.warning(self, "Błąd", f"Kompozycja z klasą '{target_class}' już istnieje!")
+            # Sprawdź czy nie tworzymy cyklu kompozycji
+            if self._check_composition_cycle(source_class, target_class):
+                QMessageBox.warning(self, "Błąd", f"Dodanie kompozycji '{target_class}' tworzyłoby cykl!")
                 return
-
-            source_data['compositions'].append(target_class)
-
-            # --- Auto-add field for composition ---
+                
+            # Auto-add field for composition
             field_name = self._generate_composition_field_name(source_class, target_class)
             field_type = target_class
             source_data['fields'].append({'name': field_name, 'type': field_type})
+            source_data['compositions'].append(target_class)
 
             QMessageBox.information(self, "Sukces", f"Dodano kompozycję: {source_class} --<> {target_class} (pole '{field_name}')")
 
-        self._update_all_class_editor_views() # Update all related views in editor
+        self._update_all_class_editor_views()
 
 
     def delete_relation(self):
@@ -613,33 +676,36 @@ class ClassDiagramEditor(QMainWindow):
 
         elif relation_type == "Kompozycja":
             if not target_class:
-                 QMessageBox.warning(self, "Błąd", "Nie wybrano klasy docelowej dla kompozycji.")
-                 return
+                QMessageBox.warning(self, "Błąd", "Nie wybrano klasy docelowej dla kompozycji.")
+                return
+                
             if target_class not in source_data['compositions']:
                 QMessageBox.warning(self, "Błąd", f"Klasa '{source_class}' nie ma kompozycji z '{target_class}'.")
                 return
 
+            # Count how many composition fields we have for this target
+            composition_fields = [
+                f for f in source_data['fields']
+                if self._is_composition_field(f['name'], f['type'], [target_class])
+            ]
+            
             reply = QMessageBox.question(self, "Potwierdzenie",
-                                         f"Usunąć kompozycję klasy '{source_class}' z '{target_class}' (usunie też powiązane pole)?",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                                        f"Usunąć WSZYSTKIE ({len(composition_fields)}) kompozycje klasy '{source_class}' z '{target_class}'?",
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+                                        QMessageBox.StandardButton.No)
 
             if reply == QMessageBox.StandardButton.Yes:
-                source_data['compositions'].remove(target_class)
-
-                # --- Auto-remove composition field ---
-                removed_field_name = None
-                fields_to_keep = []
-                for field in source_data['fields']:
-                    if self._is_composition_field(field['name'], field['type'], [target_class]): # Check against the removed target
-                        removed_field_name = field['name']
-                    else:
-                        fields_to_keep.append(field)
-                source_data['fields'] = fields_to_keep
-
-                if removed_field_name:
-                    QMessageBox.information(self, "Sukces", f"Usunięto kompozycję z '{target_class}' (usunięto pole '{removed_field_name}').")
-                else:
-                    QMessageBox.information(self, "Sukces", f"Usunięto kompozycję z '{target_class}'. Nie znaleziono pola do usunięcia.")
+                # Remove all composition fields for this target
+                source_data['fields'] = [
+                    f for f in source_data['fields']
+                    if not self._is_composition_field(f['name'], f['type'], [target_class])
+                ]
+                
+                # Remove the composition relationship
+                source_data['compositions'] = [c for c in source_data['compositions'] if c != target_class]
+                
+                QMessageBox.information(self, "Sukces", 
+                                    f"Usunięto {len(composition_fields)} kompozycji z '{target_class}'.")
 
 
         self._update_all_class_editor_views() # Update all related views
@@ -683,28 +749,28 @@ class ClassDiagramEditor(QMainWindow):
         return list(fields_map.values())
         
     def _is_composition_field(self, field_name: str, field_type: str, composition_targets: List[str]) -> bool:
-        """Checks if a field likely represents one of the given composition targets."""
-        if field_type not in composition_targets:
-            return False
-        # Check naming convention: starts with lowercase class name, ends with _obj or _obj<number>
-        base_name = field_type.lower()
-        if field_name.startswith(base_name):
-             suffix = field_name[len(base_name):]
-             return suffix == "_obj" or (suffix.startswith("_obj") and suffix[4:].isdigit())
-        return False
+        """Checks if a field represents a composition"""
+        return (field_type in composition_targets and 
+                field_name.startswith(f"composed_{field_type.lower()}_"))
 
     def _generate_composition_field_name(self, source_class: str, target_class: str) -> str:
-        """Generates a unique field name for a composition."""
-        base_field_name = target_class.lower()
-        field_name = base_field_name + "_obj"
+        """Generates unique composition field name in format composed_targetclass_number"""
+        base_name = f"composed_{target_class.lower()}"
         counter = 1
-        # Need *all* fields (own + inherited) for uniqueness check
-        existing_field_names = set(f['field']['name'] for f in self._get_all_fields_recursive(source_class))
-        while field_name in existing_field_names:
-             counter += 1
-             field_name = f"{base_field_name}_obj{counter}" # Change suffix for uniqueness
+        field_name = f"{base_name}_{counter}"
+        
+        # Find all existing composition fields for this target
+        existing_fields = [
+            f['name'] for f in self.classes[source_class]['fields']
+            if f['type'] == target_class and f['name'].startswith(base_name)
+        ]
+        
+        # Find first available number
+        while field_name in existing_fields:
+            counter += 1
+            field_name = f"{base_name}_{counter}"
+            
         return field_name
-
 
     # --- Metody aktualizacji UI Edytora Klas ---
 
