@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QTextEdit, QPushButton, QMessageBox)
 from MongoDB.main import PyMongoConverter  
 from Neo4j.main import Neo4jConverter  
+# from Cassandra.main import PyCassandraConverter
 
 class UniversalConverterApp(QWidget):
     def __init__(self):
@@ -11,21 +12,22 @@ class UniversalConverterApp(QWidget):
         
         self.mongo_converter = PyMongoConverter()
         self.neo4j_converter = Neo4jConverter()
+        # self.cassandra_converter = PyCassandraConverter()
     
     def init_ui(self):
-        self.setWindowTitle("Universal Database Converter")
+        self.setWindowTitle("Database Converter")
         self.setFixedSize(800, 600)
         
         layout = QVBoxLayout()
         
         layout.addWidget(QLabel("Class Code:"))
         self.class_code_edit = QTextEdit()
-        self.class_code_edit.setPlaceholderText("Paste your class definition here...")
+        self.class_code_edit.setPlaceholderText("Class definitions")
         layout.addWidget(self.class_code_edit)
         
-        layout.addWidget(QLabel("Objects Code (objects_list):"))
+        layout.addWidget(QLabel("Objects Code:"))
         self.objects_code_edit = QTextEdit()
-        self.objects_code_edit.setPlaceholderText("Paste your objects_list definition here...")
+        self.objects_code_edit.setPlaceholderText("Objects definitions")
         layout.addWidget(self.objects_code_edit)
         
         button_layout = QHBoxLayout()
@@ -37,6 +39,10 @@ class UniversalConverterApp(QWidget):
         self.neo4j_button = QPushButton("Save to Neo4j")
         self.neo4j_button.clicked.connect(self.save_to_neo4j)
         button_layout.addWidget(self.neo4j_button)
+
+        # self.cassandra_button = QPushButton("Save to Cassandra")
+        # self.cassandra_button.clicked.connect(self.save_to_casandra)
+        # button_layout.addWidget(self.cassandra_button)
         
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self.clear_inputs)
@@ -45,50 +51,75 @@ class UniversalConverterApp(QWidget):
         layout.addLayout(button_layout)
         self.setLayout(layout)
     
-    def execute_code(self):
-        """Wykonuje kod i zwraca objects_list"""
+    def get_objects(self):
         local_vars = {}
         try:
             exec(self.class_code_edit.toPlainText(), globals(), local_vars)
+            
             exec(self.objects_code_edit.toPlainText(), globals(), local_vars)
             
-            if 'objects_list' not in local_vars:
-                raise ValueError("objects_list not found in the provided code")
+            objects = []
+            class_names = [name for name, obj in local_vars.items() 
+                         if isinstance(obj, type) and name != '__builtins__']
+            
+            for var_name, var_value in local_vars.items():
+                if var_name.startswith('__') or var_name in class_names:
+                    continue
+                    
+                if isinstance(var_value, list):
+                    if var_value and any(isinstance(x, tuple(local_vars[cls] for cls in class_names)) for x in var_value):
+                        objects.extend(var_value)
+                elif any(isinstance(var_value, local_vars[cls]) for cls in class_names):
+                    objects.append(var_value)
+            
+            if not objects:
+                raise ValueError("No objects found in the provided code. Please define at least one object.")
                 
-            return local_vars['objects_list']
+            return objects
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Code execution failed:\n{str(e)}")
             return None
     
     def save_to_mongo(self):
-        objects = self.execute_code()
+        objects = self.get_objects()
         if objects:
             try:
                 for obj in objects:
                     self.mongo_converter.save_to_mongodb(obj)
-                QMessageBox.information(self, "Success", "Objects saved to MongoDB!")
+                QMessageBox.information(self, "Success", f"Saved {len(objects)} objects to MongoDB!")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"MongoDB save failed:\n{str(e)}")
     
     def save_to_neo4j(self):
-        objects = self.execute_code()
+        objects = self.get_objects()
         if objects:
             try:
                 for obj in objects:
                     self.neo4j_converter.save(obj)
-                QMessageBox.information(self, "Success", "Objects saved to Neo4j!")
+                QMessageBox.information(self, "Success", f"Saved {len(objects)} objects to Neo4j!")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Neo4j save failed:\n{str(e)}")
+
+    # def save_to_casandra(self):
+    #     objects = self.get_objects()
+    #     if objects:
+    #         try:
+    #             for obj in objects:
+    #                 self.neo4j_converter._save_object(obj)
+    #             QMessageBox.information(self, "Success", f"Saved {len(objects)} objects to Cassandra!")
+    #         except Exception as e:
+    #             QMessageBox.critical(self, "Error", f"Cassandra save failed:\n{str(e)}")
     
     def clear_inputs(self):
         self.class_code_edit.clear()
         self.objects_code_edit.clear()
+        
     
     def closeEvent(self, event):
-        """Zamyka połączenia przy zamykaniu aplikacji"""
         self.mongo_converter.close()
         self.neo4j_converter.close()
+        # self.cassandra_converter.close()
         event.accept()
 
 if __name__ == "__main__":

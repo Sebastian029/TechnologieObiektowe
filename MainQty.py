@@ -424,7 +424,7 @@ class ClassDiagramEditor(QMainWindow):
 
 
         # Update other relevant parts of the UI
-        self._update_editor_field_type_combo()
+        # self._update_editor_field_type_combo()
         self.update_class_tree()
     def delete_class(self):
         """Usuwa wybraną klasę z diagramu (i powiązane obiekty)"""
@@ -779,7 +779,7 @@ class ClassDiagramEditor(QMainWindow):
         self._update_editor_class_list()
         self._update_editor_fields_list() # Depends on selected_class_editor
         self._update_editor_relation_targets() # Depends on selected_class_editor
-        self._update_editor_field_type_combo()
+        # self._update_editor_field_type_combo()
         self.update_class_tree()
 
     def _update_editor_class_list(self):
@@ -833,20 +833,20 @@ class ClassDiagramEditor(QMainWindow):
         ])
         self.editor_relation_target_combo.addItems(available_targets)
 
-    def _update_editor_field_type_combo(self):
-        """Aktualizuje listę typów pól w edytorze."""
-        current_selection = self.editor_field_type_combo.currentText()
-        self.editor_field_type_combo.clear()
-        basic_types = ["str", "int", "float", "bool", "list", "dict"]
-        self.editor_field_type_combo.addItems(basic_types)
-        class_names = sorted(self.classes.keys())
-        if class_names:
-             self.editor_field_type_combo.insertSeparator(len(basic_types))
-             self.editor_field_type_combo.addItems(class_names)
+    # def _update_editor_field_type_combo(self):
+    #     """Aktualizuje listę typów pól w edytorze."""
+    #     current_selection = self.editor_field_type_combo.currentText()
+    #     self.editor_field_type_combo.clear()
+    #     basic_types = ["str", "int", "float", "bool", "list", "dict"]
+    #     self.editor_field_type_combo.addItems(basic_types)
+    #     class_names = sorted(self.classes.keys())
+    #     if class_names:
+    #          self.editor_field_type_combo.insertSeparator(len(basic_types))
+    #          self.editor_field_type_combo.addItems(class_names)
 
-        index = self.editor_field_type_combo.findText(current_selection)
-        if index != -1: self.editor_field_type_combo.setCurrentIndex(index)
-        elif self.editor_field_type_combo.count() > 0: self.editor_field_type_combo.setCurrentIndex(0)
+    #     index = self.editor_field_type_combo.findText(current_selection)
+    #     if index != -1: self.editor_field_type_combo.setCurrentIndex(index)
+    #     elif self.editor_field_type_combo.count() > 0: self.editor_field_type_combo.setCurrentIndex(0)
 
     def update_class_tree(self):
         """Aktualizuje drzewo klas w edytorze."""
