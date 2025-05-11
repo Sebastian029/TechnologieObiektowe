@@ -62,25 +62,6 @@ class ClassDiagramEditor(QMainWindow):
         self.class_editor_widget = self._create_class_editor_widget()
         self.stacked_widget.addWidget(self.class_editor_widget)
 
-
-    def _get_type_hint_str(self, type_name: str, is_composition: bool) -> str:
-        """Generates a Python type hint string."""
-        if type_name in ["str", "int", "float", "bool"]:
-            return type_name
-        elif type_name == "list":
-            return "List" # Needs 'from typing import List'
-        elif type_name == "dict":
-            return "Dict" # Needs 'from typing import Dict'
-        elif type_name in self.classes:
-            # Use string literal for forward reference for classes
-            # Mark compositions as Optional, assuming they might not be set initially
-            hint = f"'{type_name}'"
-            if is_composition:
-                hint = f"Optional[{hint}]" # Needs 'from typing import Optional'
-            return hint
-        else:
-            return "Any" # Needs 'from typing import Any'
-
     def _generate_python_code(self) -> str:
         """Generates Python code string from class and object data."""
         code_lines = []
