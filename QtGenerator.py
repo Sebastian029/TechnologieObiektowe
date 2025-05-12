@@ -63,6 +63,64 @@ class ConnectObjectsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _parse_field_type(self, type_str: str) -> Tuple[str, List[str]]:
+        """Parsuje typ pola i zwraca krotkę (base_type, type_arguments)."""
+        if '[' not in type_str or ']' not in type_str:
+            return type_str, []
+        
+        base_type = type_str[:type_str.find('[')]
+        content = type_str[type_str.find('[')+1:type_str.rfind(']')]
+        
+        # Podział na argumenty typu, uwzględniając zagnieżdżenia
+        args = []
+        current = ""
+        nest_level = 0
+        
+        for char in content:
+            if char == '[':
+                nest_level += 1
+                current += char
+            elif char == ']':
+                nest_level -= 1
+                current += char
+            elif char == ',' and nest_level == 0:
+                args.append(current.strip())
+                current = ""
+            else:
+                current += char
+        
+        if current:
+            args.append(current.strip())
+        
+        return base_type, args
+
+    def _is_type_compatible(self, source_type: str, target_type: str) -> bool:
+        """Sprawdza czy typ źródłowy jest kompatybilny z docelowym."""
+        if source_type == target_type:
+            return True
+        
+        # Parsowanie typów
+        source_base, source_args = self._parse_field_type(source_type)
+        target_base, target_args = self._parse_field_type(target_type)
+        
+        # Sprawdzenie czy to ta sama klasa
+        if source_base in self.classes and target_base in self.classes:
+            return source_base == target_base
+        
+        # Obsługa Optional/Union
+        if target_base in ['Optional', 'Union']:
+            for arg in target_args:
+                if arg.lower() not in ['none', 'nonetype']:
+                    if self._is_type_compatible(source_type, arg):
+                        return True
+        
+        # Obsługa kolekcji (tylko jeśli takie same typy kontenerów)
+        if source_base == target_base and source_base in ['List', 'list', 'Dict', 'dict', 'Set', 'set']:
+            if len(source_args) == len(target_args):
+                return all(self._is_type_compatible(s, t) for s, t in zip(source_args, target_args))
+        
+        return False
+
     def _get_all_fields_recursive(self, class_name: str, visited=None) -> List[Dict[str, Any]]:
         """ Helper to get fields recursively (copied for dialog use)."""
         # This should ideally use the main app's method if possible,
@@ -83,149 +141,144 @@ class ConnectObjectsDialog(QDialog):
             fields_map[field['name']] = {'field': field, 'source_class': class_name}
         return list(fields_map.values())
 
-    # --- THIS METHOD CONTAINS THE FIX ---
+    def _is_composition_field(self, field_name: str) -> bool:
+        """Sprawdza czy pole jest kompozycją (zaczyna się od 'composed_')."""
+        return field_name.startswith('composed_')
+
+    def _get_composition_target_class(self, field_name: str) -> Optional[str]:
+            """Wyciąga nazwę klasy docelowej z nazwy pola kompozycji,
+            uwzględniając różnice w wielkości liter."""
+            if not self._is_composition_field(field_name):
+                return None
+
+            # np. "composed_klasa_1" -> parts = ["composed", "klasa", "1"]
+            parts = field_name.split('_')
+            if len(parts) >= 2:
+                # Część nazwy pola, która ma identyfikować klasę, np. "klasa"
+                potential_class_identifier = parts[1]
+
+                # Spróbuj znaleźć pasującą nazwę klasy w self.classes, ignorując wielkość liter
+                for actual_class_name_in_dict in self.classes.keys():
+                    if actual_class_name_in_dict.lower() == potential_class_identifier.lower():
+                        return actual_class_name_in_dict # Zwróć poprawną nazwę z self.classes (np. "Klasa")
+
+                # Opcjonalny fallback: jeśli identyfikator sam w sobie jest kluczem
+                # (np. gdyby nazwa pola była composed_Klasa_1)
+                if potential_class_identifier in self.classes:
+                    return potential_class_identifier
+            return None # Nie znaleziono odpowiedniej klasy
+
     def _update_target_attributes(self):
-        """Update the attribute combo based on the selected target object."""
+        """Aktualizuje combo box z atrybutami docelowymi."""
         self.target_attribute_combo.clear()
         self.target_attribute_combo.setEnabled(False)
-        self._update_source_objects() # Clear source objects too
-
+        self._update_source_objects()  # Czyści źródła
+        
         target_obj_name = self.target_object_combo.currentText()
         if not target_obj_name or target_obj_name.startswith("--"):
             return
-
+        
         try:
-            # Get class name from the actual object instance
-            target_obj_instance = self.objects.get(target_obj_name)
-            if not target_obj_instance:
-                 self.target_attribute_combo.addItem("-- Obiekt docelowy nie istnieje --")
-                 return
-
-            target_class_name = target_obj_instance.__class__.__name__
+            target_obj = self.objects.get(target_obj_name)
+            if not target_obj:
+                self.target_attribute_combo.addItem("-- Obiekt docelowy nie istnieje --")
+                return
+            
+            target_class_name = target_obj.__class__.__name__
             if target_class_name not in self.classes:
-                 self.target_attribute_combo.addItem("-- Klasa obiektu nieznana --")
-                 return
-
+                self.target_attribute_combo.addItem("-- Klasa obiektu nieznana --")
+                return
+            
             compatible_attributes = []
-            # Use the main app's recursive field getter if possible, or the dialog's copy
-            # Assuming the dialog has access or uses its own copy:
             all_fields = self._get_all_fields_recursive(target_class_name)
-
-            # --- Start of Parsing Logic ---
+            
             for field_info in all_fields:
                 field = field_info['field']
-                field_type_str = field['type'] # e.g., "Optional[Book]", "str", "int", "Book"
-
-                base_class_name = None
-                # Try to extract base class name from complex types like Optional[X] or Union[X, None]
-                if '[' in field_type_str and ']' in field_type_str:
-                    try:
-                        # Extract content within brackets: e.g., 'Book' from Optional['Book']
-                        # Or 'wygenerowany_kod.Book, NoneType' from Union[...]
-                        content = field_type_str[field_type_str.find('[')+1:field_type_str.rfind(']')]
-                        # Split if it's a Union
-                        parts = [p.strip() for p in content.split(',')]
-                        for part in parts:
-                            # Ignore None/NoneType
-                            if part.lower() != 'none' and part.lower() != 'nonetype':
-                                # Handle qualified names like 'wygenerowany_kod.Book' -> 'Book'
-                                potential_name = part.split('.')[-1].strip("'\" ") # Remove quotes/spaces
-                                # Check if this extracted name is one of our known classes
-                                if potential_name in self.classes:
-                                    base_class_name = potential_name
-                                    break # Found the relevant class name
-                    except Exception as e:
-                        # Parsing failed, log it maybe?
-                        print(f"Debug: Failed to parse type string '{field_type_str}': {e}")
-                        base_class_name = None
-                elif field_type_str in self.classes:
-                    # It's a direct match for a simple type like "Book"
-                    base_class_name = field_type_str
-
-                # If we successfully identified a base class name known to the app, add the attribute
-                if base_class_name:
-                    compatible_attributes.append(field['name'])
-            # --- End of Parsing Logic ---
-
+                field_name = field['name']
+                
+                # Specjalna obsługa pól kompozycji
+                if self._is_composition_field(field_name):
+                    target_class = self._get_composition_target_class(field_name)
+                    if target_class in self.classes:
+                        compatible_attributes.append(field_name)
+                else:
+                    # Standardowa obsługa typów
+                    field_type = field['type']
+                    base_type, type_args = self._parse_field_type(field_type)
+                    
+                    if (base_type in self.classes or 
+                        any(arg in self.classes for arg in type_args)):
+                        compatible_attributes.append(field_name)
+            
             if compatible_attributes:
                 self.target_attribute_combo.addItem("-- Wybierz atrybut --")
                 self.target_attribute_combo.addItems(sorted(compatible_attributes))
                 self.target_attribute_combo.setEnabled(True)
             else:
-                # This is the message you were seeing when logic failed
                 self.target_attribute_combo.addItem("-- Brak atrybutów obiektowych --")
-
-        except KeyError:
-             self.target_attribute_combo.addItem("-- Błąd pobierania klasy obiektu --")
+                
         except Exception as e:
-             self.target_attribute_combo.addItem(f"-- Błąd: {e} --")
-             print(f"Error in _update_target_attributes: {e}") # Print error for debugging
-
+            self.target_attribute_combo.addItem(f"-- Błąd: {e} --")
+            print(f"Error in _update_target_attributes: {e}")
 
     def _update_source_objects(self):
-        """Update the source object combo based on the selected target attribute type."""
+        """Aktualizuje combo box z obiektami źródłowymi."""
         self.source_object_combo.clear()
         self.source_object_combo.setEnabled(False)
-
+        
         target_obj_name = self.target_object_combo.currentText()
         attribute_name = self.target_attribute_combo.currentText()
-
-        if not target_obj_name or target_obj_name.startswith("--") or \
-           not attribute_name or attribute_name.startswith("--"):
+        
+        if (not target_obj_name or target_obj_name.startswith("--") or 
+            not attribute_name or attribute_name.startswith("--")):
             return
-
+        
         try:
-            # Find the expected type for the selected attribute
-            target_obj_instance = self.objects.get(target_obj_name)
-            if not target_obj_instance: return # Target object disappeared?
-            target_class_name = target_obj_instance.__class__.__name__
-
-            expected_base_type = None
-            all_fields = self._get_all_fields_recursive(target_class_name)
-            for field_info in all_fields:
-                if field_info['field']['name'] == attribute_name:
-                    field_type_str = field_info['field']['type']
-                    # --- Reuse parsing logic to find the expected base type ---
-                    if '[' in field_type_str and ']' in field_type_str:
-                         try:
-                             content = field_type_str[field_type_str.find('[')+1:field_type_str.rfind(']')]
-                             parts = [p.strip() for p in content.split(',')]
-                             for part in parts:
-                                  if part.lower() != 'none' and part.lower() != 'nonetype':
-                                       potential_name = part.split('.')[-1].strip("'\" ")
-                                       if potential_name in self.classes:
-                                            expected_base_type = potential_name
-                                            break
-                         except Exception: pass # Ignore parsing error here
-                    elif field_type_str in self.classes:
-                         expected_base_type = field_type_str
-                    # --- End reuse parsing ---
-                    break # Found the attribute, stop searching
-
-            if not expected_base_type:
+            target_obj = self.objects[target_obj_name]
+            attribute_name_str = str(attribute_name)
+            
+            # Określ oczekiwany typ
+            expected_class = None
+            
+            # 1. Sprawdź czy to pole kompozycji
+            if self._is_composition_field(attribute_name_str):
+                expected_class = self._get_composition_target_class(attribute_name_str)
+            else:
+                # 2. Jeśli to nie kompozycja, sprawdź typ z definicji klasy
+                target_class_name = target_obj.__class__.__name__
+                all_fields = self._get_all_fields_recursive(target_class_name)
+                
+                for field_info in all_fields:
+                    if field_info['field']['name'] == attribute_name_str:
+                        field_type = field_info['field']['type']
+                        base_type, _ = self._parse_field_type(field_type)
+                        if base_type in self.classes:
+                            expected_class = base_type
+                        break
+            
+            if not expected_class:
                 self.source_object_combo.addItem("-- Nieznany typ atrybutu --")
                 return
-
-            # Find existing objects of the expected base type (excluding the target itself)
+            
+            # Znajdź kompatybilne obiekty (pomijając sam obiekt docelowy)
             compatible_sources = []
             for obj_name, obj_instance in self.objects.items():
-                 # Check class name directly from the instance
-                 if obj_instance.__class__.__name__ == expected_base_type and obj_name != target_obj_name:
+                if obj_name == target_obj_name:
+                    continue
+                    
+                if obj_instance.__class__.__name__ == expected_class:
                     compatible_sources.append(obj_name)
-
+            
             if compatible_sources:
                 self.source_object_combo.addItem("-- Wybierz obiekt źródłowy --")
                 self.source_object_combo.addItems(sorted(compatible_sources))
                 self.source_object_combo.setEnabled(True)
             else:
-                self.source_object_combo.addItem(f"-- Brak obiektów typu {expected_base_type} --")
-
-        except KeyError:
-             self.source_object_combo.addItem("-- Błąd pobierania danych --")
+                self.source_object_combo.addItem(f"-- Brak obiektów typu {expected_class} --")
+                
         except Exception as e:
-             self.source_object_combo.addItem(f"-- Błąd: {e} --")
-             print(f"Error in _update_source_objects: {e}")
-
+            self.source_object_combo.addItem(f"-- Błąd: {e} --")
+            print(f"Error in _update_source_objects: {e}")
 
     def get_connection_details(self) -> Optional[Tuple[str, str, str]]:
         """Returns the selected target object name, attribute name, and source object name."""
@@ -633,46 +686,79 @@ class ObjectGeneratorApp(QMainWindow):
                 else: field_widget.setCurrentIndex(0)
 
     def _create_predefined_objects(self):
-        """Creates predefined Book and Library objects if classes exist."""
-        # This is kept simple, assuming specific fields ('pages', 'book_obj', 'city')
+        """Creates predefined objects for all available classes using their fields."""
         created_objects = []
-        try:
-            book1, book2 = None, None # Initialize
-            if 'Book' in self.classes and any(f['field']['name']=='pages' for f in self._get_all_fields_recursive('Book')):
-                book_class = self.classes['Book']['class_obj']
-                book1 = book_class(pages=200)
-                self.objects['book1'] = book1
-                self.object_data['book1'] = {'class': 'Book', 'attributes': {'pages': 200}}
-                created_objects.append('book1')
-
-                book2 = book_class(pages=350)
-                self.objects['book2'] = book2
-                self.object_data['book2'] = {'class': 'Book', 'attributes': {'pages': 350}}
-                created_objects.append('book2')
-
-            if 'Library' in self.classes and book1 and book2 and \
-               any(f['field']['name']=='book_obj' for f in self._get_all_fields_recursive('Library')) and \
-               any(f['field']['name']=='city' for f in self._get_all_fields_recursive('Library')):
-                library_class = self.classes['Library']['class_obj']
-
-                library1 = library_class(book_obj=book1, city="Warsaw")
-                self.objects['library1'] = library1
-                self.object_data['library1'] = {'class': 'Library', 'attributes': {'book_obj': book1, 'city': "Warsaw"}}
-                created_objects.append('library1')
-
-                library2 = library_class(book_obj=book2, city="Krakow")
-                self.objects['library2'] = library2
-                self.object_data['library2'] = {'class': 'Library', 'attributes': {'book_obj': book2, 'city': "Krakow"}}
-                created_objects.append('library2')
-
-            if created_objects:
-                self.objects_changed.emit()
-                QMessageBox.information(self, "Sukces", f"Utworzono przykładowe obiekty: {', '.join(created_objects)}")
-            else:
-                 QMessageBox.warning(self, "Informacja", "Nie utworzono żadnych przykładowych obiektów (brakujące klasy 'Book'/'Library' lub wymagane pola).")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Błąd", f"Nie udało się utworzyć przykładowych obiektów: {str(e)}")
+        
+        for class_name, class_info in self.classes.items():
+            # Skip if class already has instances (to avoid duplicates)
+            existing_instances = [name for name, obj in self.objects.items() 
+                                if obj.__class__.__name__ == class_name]
+            if existing_instances:
+                continue
+                
+            try:
+                # Create 1-2 instances per class
+                for i in range(1, 3):
+                    obj_name = f"{class_name.lower()}{i}"
+                    if obj_name in self.objects:
+                        continue  # Skip if name exists
+                        
+                    # Prepare constructor args based on fields
+                    constructor_args = {}
+                    fields_info = self._get_all_fields_recursive(class_name)
+                    
+                    for field_info in fields_info:
+                        field = field_info['field']
+                        field_name = field['name']
+                        field_type = field['type']
+                        
+                        # Generate appropriate random value based on type
+                        if 'int' in field_type:
+                            constructor_args[field_name] = random.randint(1, 100)
+                        elif 'float' in field_type:
+                            constructor_args[field_name] = round(random.uniform(1, 100), 2)
+                        elif 'bool' in field_type:
+                            constructor_args[field_name] = random.choice([True, False])
+                        elif 'str' in field_type:
+                            constructor_args[field_name] = ''.join(random.choices(string.ascii_letters, k=10))
+                        elif any(t in field_type for t in ['List', 'list', 'Dict', 'dict']):
+                            # Simple collections
+                            if 'List' in field_type or 'list' in field_type:
+                                constructor_args[field_name] = [random.randint(1, 10), random.choice(['a', 'b', 'c'])]
+                            else:  # Dict
+                                constructor_args[field_name] = {'key': random.randint(1, 10)}
+                        elif field_type in self.classes:
+                            # Composition - try to find existing object of this type
+                            compatible_objects = [name for name, obj in self.objects.items() 
+                                                if obj.__class__.__name__ == field_type]
+                            if compatible_objects:
+                                constructor_args[field_name] = self.objects[random.choice(compatible_objects)]
+                            # Else leave unset (will use default if available)
+                    
+                    # Create the object
+                    obj = class_info['class_obj'](**constructor_args)
+                    self.objects[obj_name] = obj
+                    self.object_data[obj_name] = {
+                        'class': class_name,
+                        'attributes': constructor_args
+                    }
+                    created_objects.append(obj_name)
+                    
+            except Exception as e:
+                print(f"Error creating predefined {class_name}: {e}")
+                continue
+        
+        if created_objects:
+            self.objects_changed.emit()
+            QMessageBox.information(
+                self, "Sukces", 
+                f"Utworzono przykładowe obiekty: {', '.join(created_objects)}"
+            )
+        else:
+            QMessageBox.information(
+                self, "Informacja", 
+                "Nie utworzono nowych przykładowych obiektów (wszystkie klasy mają już instancje)."
+            )
 
     def _create_or_update_object(self):
         """Creates a new object or updates an existing one based on form data."""
