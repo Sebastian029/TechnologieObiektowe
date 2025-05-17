@@ -3,7 +3,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton,QComboBox, QMessageBox,
     QTreeWidget, QTreeWidgetItem, QFormLayout, QScrollArea,
-    QSpinBox, QCheckBox, QDialog, QDialogButtonBox
+    QSpinBox, QCheckBox, QDialog, QDialogButtonBox, QListWidget,
+    QListWidgetItem, QStackedWidget
 )
 from PyQt6.QtCore import  pyqtSignal, QLocale
 from PyQt6.QtGui import QDoubleValidator
@@ -22,38 +23,46 @@ ObjectsDict = Dict[str, Any] # Stores actual Python objects
 
 
 # --- Dialog for Connecting Objects ---
+# --- Dialog for Connecting Objects ---
 class ConnectObjectsDialog(QDialog):
     def __init__(self, objects_dict: ObjectsDict, classes_dict: ClassesDict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Połącz Obiekty")
         self.objects = objects_dict
         self.classes = classes_dict
-        self.target_object = None
-        self.target_attribute = None
-        self.source_object = None
+        # Removed self.target_object, self.target_attribute, self.source_object as they are determined on accept
 
         layout = QVBoxLayout(self)
-        form_layout = QFormLayout()
+        self.form_layout = QFormLayout() # Make form_layout accessible
 
         # 1. Select Target Object
         self.target_object_combo = QComboBox()
         self.target_object_combo.addItem("-- Wybierz obiekt docelowy --")
         self.target_object_combo.addItems(sorted(self.objects.keys()))
         self.target_object_combo.currentIndexChanged.connect(self._update_target_attributes)
-        form_layout.addRow("Obiekt docelowy:", self.target_object_combo)
+        self.form_layout.addRow("Obiekt docelowy:", self.target_object_combo)
 
         # 2. Select Target Attribute (filtered for composition)
         self.target_attribute_combo = QComboBox()
         self.target_attribute_combo.setEnabled(False) # Enable when target is selected
-        self.target_attribute_combo.currentIndexChanged.connect(self._update_source_objects)
-        form_layout.addRow("Atrybut docelowy:", self.target_attribute_combo)
+        self.target_attribute_combo.currentIndexChanged.connect(self._update_source_widgets) # Changed method name
+        self.form_layout.addRow("Atrybut docelowy:", self.target_attribute_combo)
 
-        # 3. Select Source Object (filtered by attribute type)
-        self.source_object_combo = QComboBox()
-        self.source_object_combo.setEnabled(False) # Enable when attribute is selected
-        form_layout.addRow("Obiekt źródłowy:", self.source_object_combo)
+        # 3. Select Source Object(s) using QStackedWidget
+        self.source_stacked_widget = QStackedWidget()
+        self.source_object_combo = QComboBox() # For single selection
+        self.source_objects_list_widget = QListWidget() # For multi-selection
+        self.source_objects_list_widget.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
 
-        layout.addLayout(form_layout)
+        self.source_stacked_widget.addWidget(self.source_object_combo)       # Index 0
+        self.source_stacked_widget.addWidget(self.source_objects_list_widget) # Index 1
+        self.source_stacked_widget.setEnabled(False) # Disable stack itself initially
+        self.form_layout.addRow("Obiekt(y) źródłowe:", self.source_stacked_widget)
+
+        layout.addLayout(self.form_layout)
+
+        # To store type of connection for get_connection_details
+        self._current_attribute_is_list = False
 
         # OK and Cancel buttons
         buttons = QDialogButtonBox(
@@ -65,236 +74,251 @@ class ConnectObjectsDialog(QDialog):
 
     def _parse_field_type(self, type_str: str) -> Tuple[str, List[str]]:
         """Parsuje typ pola i zwraca krotkę (base_type, type_arguments)."""
+        # Ensure we handle cases like 'wygenerowany_kod.Klasa' becoming 'Klasa' if not generic
+        # and 'typing.List[wygenerowany_kod.Klasa]' having base 'typing.List'
         if '[' not in type_str or ']' not in type_str:
-            return type_str, []
-        
-        base_type = type_str[:type_str.find('[')]
+            return type_str.split('.')[-1], [] # Return base name for non-generics
+
+        base_type_full = type_str[:type_str.find('[')] # e.g. typing.List
         content = type_str[type_str.find('[')+1:type_str.rfind(']')]
-        
-        # Podział na argumenty typu, uwzględniając zagnieżdżenia
+
         args = []
-        current = ""
+        current_arg = ""
         nest_level = 0
-        
         for char in content:
             if char == '[':
                 nest_level += 1
-                current += char
+                current_arg += char
             elif char == ']':
                 nest_level -= 1
-                current += char
+                current_arg += char
             elif char == ',' and nest_level == 0:
-                args.append(current.strip())
-                current = ""
+                args.append(current_arg.strip())
+                current_arg = ""
             else:
-                current += char
+                current_arg += char
+        if current_arg:
+            args.append(current_arg.strip())
         
-        if current:
-            args.append(current.strip())
-        
-        return base_type, args
+        return base_type_full, args
 
-    def _is_type_compatible(self, source_type: str, target_type: str) -> bool:
-        """Sprawdza czy typ źródłowy jest kompatybilny z docelowym."""
-        if source_type == target_type:
-            return True
-        
-        # Parsowanie typów
-        source_base, source_args = self._parse_field_type(source_type)
-        target_base, target_args = self._parse_field_type(target_type)
-        
-        # Sprawdzenie czy to ta sama klasa
-        if source_base in self.classes and target_base in self.classes:
-            return source_base == target_base
-        
-        # Obsługa Optional/Union
-        if target_base in ['Optional', 'Union']:
-            for arg in target_args:
-                if arg.lower() not in ['none', 'nonetype']:
-                    if self._is_type_compatible(source_type, arg):
-                        return True
-        
-        # Obsługa kolekcji (tylko jeśli takie same typy kontenerów)
-        if source_base == target_base and source_base in ['List', 'list', 'Dict', 'dict', 'Set', 'set']:
-            if len(source_args) == len(target_args):
-                return all(self._is_type_compatible(s, t) for s, t in zip(source_args, target_args))
-        
-        return False
+
+    def _get_connectable_field_info(self, field_type_str: str) -> Tuple[Optional[str], bool]:
+        """
+        Determines if a field type is connectable and what kind of connection.
+        Returns: (connectable_class_name_or_None, is_list_of_that_class)
+        """
+        base_type_full, type_args = self._parse_field_type(field_type_str)
+        base_type_simple = base_type_full.split('.')[-1] # e.g., List, Optional, MyClass
+
+        if base_type_simple in self.classes: # Direct class reference e.g. "MyClass"
+            return base_type_simple, False
+
+        if base_type_simple.lower() in ['list', 'sequence']:
+            if type_args:
+                item_type_arg_str = type_args[0].strip("'\" ") # e.g. "MyClass" or "module.MyClass"
+                cleaned_item_type = item_type_arg_str.split('.')[-1]
+                if cleaned_item_type in self.classes:
+                    return cleaned_item_type, True
+            return None, False
+
+        if base_type_simple.lower() in ['optional', 'union']:
+            for arg_str in type_args:
+                if arg_str.strip().lower() not in ['none', 'nonetype', 'type[none]']:
+                    connectable_class, is_list = self._get_connectable_field_info(arg_str)
+                    if connectable_class:
+                        return connectable_class, is_list
+            return None, False
+
+        return None, False
 
     def _get_all_fields_recursive(self, class_name: str, visited=None) -> List[Dict[str, Any]]:
-        """ Helper to get fields recursively (copied for dialog use)."""
-        # This should ideally use the main app's method if possible,
-        # but copying it here makes the dialog self-contained regarding this logic.
-        if class_name not in self.classes:
-            return []
+        if class_name not in self.classes: return []
         if visited is None: visited = set()
         if class_name in visited: return []
         visited.add(class_name)
         fields_map = {}
-        parent_class = self.classes[class_name].get('inherits')
-        if parent_class and parent_class in self.classes: # Check parent exists
-            parent_fields = self._get_all_fields_recursive(parent_class, visited.copy())
+        parent_class_name = self.classes[class_name].get('inherits')
+        if parent_class_name and parent_class_name in self.classes:
+            parent_fields = self._get_all_fields_recursive(parent_class_name, visited.copy())
             for field_info in parent_fields:
                 fields_map[field_info['field']['name']] = field_info
         own_fields = self.classes[class_name].get('fields', [])
-        for field in own_fields:
-            fields_map[field['name']] = {'field': field, 'source_class': class_name}
+        for field_data in own_fields:
+            fields_map[field_data['name']] = {'field': field_data, 'source_class': class_name}
         return list(fields_map.values())
 
     def _is_composition_field(self, field_name: str) -> bool:
-        """Sprawdza czy pole jest kompozycją (zaczyna się od 'composed_')."""
         return field_name.startswith('composed_')
 
     def _get_composition_target_class(self, field_name: str) -> Optional[str]:
-            """Wyciąga nazwę klasy docelowej z nazwy pola kompozycji,
-            uwzględniając różnice w wielkości liter."""
-            if not self._is_composition_field(field_name):
-                return None
-
-            # np. "composed_klasa_1" -> parts = ["composed", "klasa", "1"]
-            parts = field_name.split('_')
-            if len(parts) >= 2:
-                # Część nazwy pola, która ma identyfikować klasę, np. "klasa"
-                potential_class_identifier = parts[1]
-
-                # Spróbuj znaleźć pasującą nazwę klasy w self.classes, ignorując wielkość liter
-                for actual_class_name_in_dict in self.classes.keys():
-                    if actual_class_name_in_dict.lower() == potential_class_identifier.lower():
-                        return actual_class_name_in_dict # Zwróć poprawną nazwę z self.classes (np. "Klasa")
-
-                # Opcjonalny fallback: jeśli identyfikator sam w sobie jest kluczem
-                # (np. gdyby nazwa pola była composed_Klasa_1)
-                if potential_class_identifier in self.classes:
-                    return potential_class_identifier
-            return None # Nie znaleziono odpowiedniej klasy
+        if not self._is_composition_field(field_name): return None
+        parts = field_name.split('_')
+        if len(parts) >= 2:
+            potential_class_identifier = parts[1]
+            for actual_class_name in self.classes.keys():
+                if actual_class_name.lower() == potential_class_identifier.lower():
+                    return actual_class_name
+            if potential_class_identifier in self.classes: # Fallback for exact match
+                 return potential_class_identifier
+        return None
 
     def _update_target_attributes(self):
-        """Aktualizuje combo box z atrybutami docelowymi."""
         self.target_attribute_combo.clear()
         self.target_attribute_combo.setEnabled(False)
-        self._update_source_objects()  # Czyści źródła
-        
+        self._update_source_widgets() # Clear and disable source widgets
+
         target_obj_name = self.target_object_combo.currentText()
         if not target_obj_name or target_obj_name.startswith("--"):
             return
-        
-        try:
-            target_obj = self.objects.get(target_obj_name)
-            if not target_obj:
-                self.target_attribute_combo.addItem("-- Obiekt docelowy nie istnieje --")
-                return
-            
-            target_class_name = target_obj.__class__.__name__
-            if target_class_name not in self.classes:
-                self.target_attribute_combo.addItem("-- Klasa obiektu nieznana --")
-                return
-            
-            compatible_attributes = []
-            all_fields = self._get_all_fields_recursive(target_class_name)
-            
-            for field_info in all_fields:
-                field = field_info['field']
-                field_name = field['name']
-                
-                # Specjalna obsługa pól kompozycji
-                if self._is_composition_field(field_name):
-                    target_class = self._get_composition_target_class(field_name)
-                    if target_class in self.classes:
-                        compatible_attributes.append(field_name)
-                else:
-                    # Standardowa obsługa typów
-                    field_type = field['type']
-                    base_type, type_args = self._parse_field_type(field_type)
-                    
-                    if (base_type in self.classes or 
-                        any(arg in self.classes for arg in type_args)):
-                        compatible_attributes.append(field_name)
-            
-            if compatible_attributes:
-                self.target_attribute_combo.addItem("-- Wybierz atrybut --")
-                self.target_attribute_combo.addItems(sorted(compatible_attributes))
-                self.target_attribute_combo.setEnabled(True)
-            else:
-                self.target_attribute_combo.addItem("-- Brak atrybutów obiektowych --")
-                
-        except Exception as e:
-            self.target_attribute_combo.addItem(f"-- Błąd: {e} --")
-            print(f"Error in _update_target_attributes: {e}")
 
-    def _update_source_objects(self):
-        """Aktualizuje combo box z obiektami źródłowymi."""
-        self.source_object_combo.clear()
-        self.source_object_combo.setEnabled(False)
+        target_obj = self.objects.get(target_obj_name)
+        if not target_obj:
+            self.target_attribute_combo.addItem("-- Obiekt docelowy nie istnieje --")
+            return
+
+        target_class_name = target_obj.__class__.__name__
+        if target_class_name not in self.classes:
+            self.target_attribute_combo.addItem("-- Klasa obiektu nieznana --")
+            return
+
+        compatible_attributes = []
+        all_fields_info = self._get_all_fields_recursive(target_class_name)
+
+        for field_info_item in all_fields_info:
+            field_data = field_info_item['field']
+            field_name = field_data['name']
+            field_type_str = field_data['type']
+
+            if self._is_composition_field(field_name):
+                target_class_for_composed = self._get_composition_target_class(field_name)
+                if target_class_for_composed and target_class_for_composed in self.classes:
+                    compatible_attributes.append(field_name)
+            else:
+                connectable_class, _ = self._get_connectable_field_info(field_type_str)
+                if connectable_class:
+                    compatible_attributes.append(field_name)
         
+        if compatible_attributes:
+            self.target_attribute_combo.addItem("-- Wybierz atrybut --")
+            self.target_attribute_combo.addItems(sorted(compatible_attributes))
+            self.target_attribute_combo.setEnabled(True)
+        else:
+            self.target_attribute_combo.addItem("-- Brak atrybutów obiektowych --")
+
+    def _update_source_widgets(self): # Renamed from _update_source_objects
+        """Updates the source selection widget (combo or list) based on the target attribute."""
+        self.source_stacked_widget.setEnabled(False)
+        self.source_object_combo.clear()
+        self.source_objects_list_widget.clear()
+        self._current_attribute_is_list = False # Reset
+
         target_obj_name = self.target_object_combo.currentText()
         attribute_name = self.target_attribute_combo.currentText()
-        
-        if (not target_obj_name or target_obj_name.startswith("--") or 
+
+        if (not target_obj_name or target_obj_name.startswith("--") or
             not attribute_name or attribute_name.startswith("--")):
+            # Add placeholder to current widget in stack and disable
+            current_widget = self.source_stacked_widget.currentWidget()
+            if isinstance(current_widget, QComboBox):
+                current_widget.addItem("-- Najpierw wybierz atrybut --")
+            elif isinstance(current_widget, QListWidget):
+                current_widget.addItem("-- Najpierw wybierz atrybut --")
             return
+
+        target_obj = self.objects[target_obj_name]
+        target_class_name_actual = target_obj.__class__.__name__
         
-        try:
-            target_obj = self.objects[target_obj_name]
-            attribute_name_str = str(attribute_name)
-            
-            # Określ oczekiwany typ
-            expected_class = None
-            
-            # 1. Sprawdź czy to pole kompozycji
-            if self._is_composition_field(attribute_name_str):
-                expected_class = self._get_composition_target_class(attribute_name_str)
+        expected_item_class = None
+        
+        all_fields_info = self._get_all_fields_recursive(target_class_name_actual)
+        field_definition_found = False
+        for field_info_item in all_fields_info:
+            field_data = field_info_item['field']
+            if field_data['name'] == attribute_name:
+                field_type_str = field_data['type']
+                if self._is_composition_field(attribute_name):
+                    expected_item_class = self._get_composition_target_class(attribute_name)
+                    self._current_attribute_is_list = False
+                else:
+                    conn_class, is_list = self._get_connectable_field_info(field_type_str)
+                    if conn_class:
+                        expected_item_class = conn_class
+                        self._current_attribute_is_list = is_list
+                field_definition_found = True
+                break
+        
+        if not field_definition_found or not expected_item_class:
+            # This case should ideally be prevented by _update_target_attributes
+            current_widget = self.source_stacked_widget.currentWidget()
+            msg = "-- Błąd: Nie można określić typu docelowego --"
+            if isinstance(current_widget, QComboBox): current_widget.addItem(msg)
+            else: current_widget.addItem(QListWidgetItem(msg))
+            print(f"Could not determine target type for {target_obj_name}.{attribute_name}")
+            return
+
+        # Filter compatible source objects
+        compatible_sources = []
+        for obj_name, obj_instance in self.objects.items():
+            if obj_name == target_obj_name: # Cannot connect to self in this way
+                continue
+            if obj_instance.__class__.__name__ == expected_item_class:
+                compatible_sources.append(obj_name)
+        
+        compatible_sources.sort()
+
+        if self._current_attribute_is_list:
+            self.source_stacked_widget.setCurrentWidget(self.source_objects_list_widget)
+            if compatible_sources:
+                for src_name in compatible_sources:
+                    self.source_objects_list_widget.addItem(QListWidgetItem(src_name))
+                self.source_stacked_widget.setEnabled(True)
+                self.source_objects_list_widget.setEnabled(True)
             else:
-                # 2. Jeśli to nie kompozycja, sprawdź typ z definicji klasy
-                target_class_name = target_obj.__class__.__name__
-                all_fields = self._get_all_fields_recursive(target_class_name)
-                
-                for field_info in all_fields:
-                    if field_info['field']['name'] == attribute_name_str:
-                        field_type = field_info['field']['type']
-                        base_type, _ = self._parse_field_type(field_type)
-                        if base_type in self.classes:
-                            expected_class = base_type
-                        break
-            
-            if not expected_class:
-                self.source_object_combo.addItem("-- Nieznany typ atrybutu --")
-                return
-            
-            # Znajdź kompatybilne obiekty (pomijając sam obiekt docelowy)
-            compatible_sources = []
-            for obj_name, obj_instance in self.objects.items():
-                if obj_name == target_obj_name:
-                    continue
-                    
-                if obj_instance.__class__.__name__ == expected_class:
-                    compatible_sources.append(obj_name)
-            
+                item = QListWidgetItem(f"-- Brak obiektów typu {expected_item_class} --")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable & ~Qt.ItemFlag.ItemIsEnabled)
+                self.source_objects_list_widget.addItem(item)
+                self.source_stacked_widget.setEnabled(True) # Stack itself can be enabled
+                self.source_objects_list_widget.setEnabled(False) # But list is not usable
+        else: # Single object connection
+            self.source_stacked_widget.setCurrentWidget(self.source_object_combo)
             if compatible_sources:
                 self.source_object_combo.addItem("-- Wybierz obiekt źródłowy --")
-                self.source_object_combo.addItems(sorted(compatible_sources))
+                self.source_object_combo.addItems(compatible_sources)
+                self.source_stacked_widget.setEnabled(True)
                 self.source_object_combo.setEnabled(True)
             else:
-                self.source_object_combo.addItem(f"-- Brak obiektów typu {expected_class} --")
-                
-        except Exception as e:
-            self.source_object_combo.addItem(f"-- Błąd: {e} --")
-            print(f"Error in _update_source_objects: {e}")
+                self.source_object_combo.addItem(f"-- Brak obiektów typu {expected_item_class} --")
+                self.source_stacked_widget.setEnabled(True)
+                self.source_object_combo.setEnabled(False)
 
-    def get_connection_details(self) -> Optional[Tuple[str, str, str]]:
-        """Returns the selected target object name, attribute name, and source object name."""
+
+    def get_connection_details(self) -> Optional[Tuple[str, str, Any]]: # Any can be str or List[str]
         target_obj_name = self.target_object_combo.currentText()
         attribute_name = self.target_attribute_combo.currentText()
-        source_obj_name = self.source_object_combo.currentText()
 
-        # Check if valid selections were made (not the placeholder text)
-        if target_obj_name.startswith("--") or \
-           attribute_name.startswith("--") or \
-           source_obj_name.startswith("--"):
-            return None # Invalid selection
+        if target_obj_name.startswith("--") or attribute_name.startswith("--"):
+            return None
 
-        return target_obj_name, attribute_name, source_obj_name
+        source_data: Any = None
+        if self._current_attribute_is_list:
+            if self.source_stacked_widget.currentWidget() == self.source_objects_list_widget:
+                selected_items = self.source_objects_list_widget.selectedItems()
+                # Filter out any non-selectable placeholder items
+                source_data = [item.text() for item in selected_items if item.flags() & Qt.ItemFlag.ItemIsSelectable]
+                # If source_data is empty list, it means either nothing selected or only placeholder was there
+            else: return None # Should not happen
+        else: # Single object
+            if self.source_stacked_widget.currentWidget() == self.source_object_combo:
+                source_data = self.source_object_combo.currentText()
+                if source_data.startswith("--"): # No valid single object selected
+                    return None
+            else: return None # Should not happen
+        
+        if source_data is None: # Catch all for safety
+             return None
 
-
+        return target_obj_name, attribute_name, source_data
 # --- Main Application Window ---
 class ObjectGeneratorApp(QMainWindow):
     objects_changed = pyqtSignal()
@@ -525,97 +549,59 @@ class ObjectGeneratorApp(QMainWindow):
 
     def _update_object_creation_form(self):
         """Updates the object creation form based on the selected class."""
-        # Clear previous widgets safely
         self._clear_layout(self.object_fields_layout)
 
         selected_class = self.object_class_combo.currentText()
         if not selected_class or selected_class not in self.classes:
-            # Add a placeholder if the class isn't found or isn't selected
-            if selected_class: # Only show if a specific invalid class was selected
-                 self.object_fields_layout.addRow(QLabel(f"Klasa '{selected_class}' nieznana."))
+            if selected_class:
+                self.object_fields_layout.addRow(QLabel(f"Klasa '{selected_class}' nieznana."))
             return
 
-        # Get all fields (own and inherited)
         all_fields = self._get_all_fields_recursive(selected_class)
-
-        if not all_fields:
-            self.object_fields_layout.addRow(QLabel("Klasa nie ma definiowanych atrybutów do wypełnienia."))
-            return
-
-        # Sort fields by name
         all_fields.sort(key=lambda x: x['field']['name'])
 
         for field_info in all_fields:
             field = field_info['field']
             field_name = field['name']
-            field_type = field['type'] # e.g., "int", "str", "Optional[Book]", "List[str]"
+            field_type = field['type']
 
-            # Determine the base type for widget selection and combo population
-            base_type = field_type
-            is_optional = False
-            if '[' in field_type and ']' in field_type:
-                 # Handle generics like Optional[X], List[X], Union[X, None]
-                 try:
-                     origin_part = field_type[:field_type.find('[')]
-                     content_part = field_type[field_type.find('[')+1:field_type.rfind(']')]
-                     args = [a.strip() for a in content_part.split(',')]
+            label = QLabel(f"{field_name} ({field_type})")
+            input_widget = None
 
-                     if origin_part in ['Optional', 'Union']:
-                          # Find the non-None type in Optional/Union
-                          non_none_args = [a for a in args if a.lower() != 'none' and a.lower() != 'nonetype']
-                          if len(non_none_args) == 1:
-                               base_type = non_none_args[0].split('.')[-1] # Use base name like 'Book'
-                          is_optional = True # Mark as optional
-                     elif origin_part in ['List', 'list', 'Dict', 'dict', 'Set', 'set', 'Tuple', 'tuple']:
-                          base_type = origin_part # Base type is the collection itself
-                     # else keep original field_type as base_type for unknown generics
-                 except Exception:
-                      pass # Keep original field_type if parsing fails
-
-
-            label = QLabel(f"{field_name} ({field_type})") # Show full type info in label
-            input_widget: Optional[QWidget] = None # Initialize widget variable
-
-            # --- Create appropriate input widget based on the *base* field type ---
-            if base_type == "int":
+            # Dodane obsługę nowych typów
+            if field_type in ["List[float]", "List[int]", "List[str]"]:
+                input_widget = QLineEdit()
+                input_widget.setPlaceholderText(f"Wpisz listę jako Python literal (np. [1.0, 2.0] dla List[float])")
+            elif field_type in ["Dict[str, str]", "Dict[str, int]", "Dict[str, float]"]:
+                input_widget = QLineEdit()
+                input_widget.setPlaceholderText(f"Wpisz słownik jako Python literal (np. {{'klucz': wartość}})")
+            elif field_type in ["Set[int]", "Set[float]", "Set[str]", "FrozenSet[int]", "FrozenSet[float]", "FrozenSet[str]"]:
+                input_widget = QLineEdit()
+                input_widget.setPlaceholderText(f"Wpisz zbiór jako Python literal (np. {{1, 2, 3}})")
+            elif field_type == "float":
+                input_widget = QLineEdit()
+                validator = QDoubleValidator()
+                validator.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+                input_widget.setValidator(validator)
+            elif field_type == "int":
                 input_widget = QSpinBox()
-                input_widget.setRange(-2147483647, 2147483647) # Max 32-bit signed int
-            elif base_type == "float":
-                 input_widget = QLineEdit()
-                 input_widget.setPlaceholderText("Wprowadź liczbę zmiennoprzecinkową")
-                 # Add a validator for float input
-                 validator = QDoubleValidator()
-                 validator.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)) # Use '.' decimal separator
-                 input_widget.setValidator(validator)
-            elif base_type == "bool":
+                input_widget.setRange(-2147483647, 2147483647)
+            elif field_type == "bool":
                 input_widget = QCheckBox()
-            elif base_type == "str":
+            elif field_type == "str":
                 input_widget = QLineEdit()
-            # Handle common collections shown as LineEdit for literal input
-            elif base_type in ["list", "List", "dict", "Dict", "set", "Set", "tuple", "Tuple"]:
-                input_widget = QLineEdit()
-                input_widget.setPlaceholderText(f"Wpisz jako Python literal (np. [1,'a'])")
-                input_widget.setToolTip(f"Oczekiwany typ: {field_type}")
-            # Handle composition: base_type is a known class name
-            elif base_type in self.classes:
+            elif field_type in self.classes:  # Composition
                 input_widget = QComboBox()
-                input_widget.addItem("(Brak)") # Default/None option
-                # Add existing objects of this type
+                input_widget.addItem("(Brak)")
                 for obj_name, obj_instance in self.objects.items():
-                    # Use actual object's class name for matching
-                    if obj_instance.__class__.__name__ == base_type:
+                    if obj_instance.__class__.__name__ == field_type:
                         input_widget.addItem(obj_name)
-            else:  # Unknown or complex type not handled above
-                 input_widget = QLineEdit()
-                 input_widget.setPlaceholderText(f"(Typ: {field_type})")
-                 input_widget.setToolTip(f"Wprowadź wartość jako string lub Python literal dla typu: {field_type}")
-
-
-            if input_widget is not None:
-                 self.object_fields_layout.addRow(label, input_widget)
             else:
-                 # Fallback label if widget creation failed (should not happen with current logic)
-                 self.object_fields_layout.addRow(label, QLabel(f"Nieobsługiwany typ widgetu: {field_type}"))
+                input_widget = QLineEdit()
+                input_widget.setPlaceholderText(f"(Typ: {field_type})")
+
+            if input_widget:
+                self.object_fields_layout.addRow(label, input_widget)
 
     def _get_all_fields_recursive(self, class_name: str, visited=None) -> List[Dict[str, Any]]:
         """Recursively gets all fields (own and inherited) for a class."""
@@ -658,32 +644,55 @@ class ObjectGeneratorApp(QMainWindow):
         for i in range(self.object_fields_layout.rowCount()):
             label_item = self.object_fields_layout.itemAt(i, QFormLayout.ItemRole.LabelRole)
             field_item = self.object_fields_layout.itemAt(i, QFormLayout.ItemRole.FieldRole)
-            if not label_item or not field_item: continue
+            if not label_item or not field_item:
+                continue
+
             label_widget = label_item.widget()
             field_widget = field_item.widget()
-            if not isinstance(label_widget, QLabel) or not field_widget: continue
+            if not isinstance(label_widget, QLabel) or not field_widget:
+                continue
 
-            label_text = label_widget.text()
             try:
-                 field_name = label_text.split('(')[0].strip()
-                 field_type = label_text.split('(')[1][:-1].strip() # Type from label
-                 base_type = field_type.split('[')[0] # Base type for logic
-            except Exception: continue # Skip if label format wrong
+                field_name = label_widget.text().split('(')[0].strip()
+                field_type = label_widget.text().split('(')[1][:-1].strip()
+            except Exception:
+                continue
 
-            # Generate random value based on widget type / base type
+            # Generowanie losowych danych dla różnych typów
             if isinstance(field_widget, QLineEdit):
-                if base_type == "str": field_widget.setText(''.join(random.choices(string.ascii_letters + ' ', k=10)))
-                elif base_type == "int": field_widget.setText(str(random.randint(0, 100)))
-                elif base_type == "float": field_widget.setText(f"{random.uniform(0, 100):.2f}")
-                elif base_type in ["list", "List"]: field_widget.setText(f"['{random.choice(['a','b','c'])}', {random.randint(1,5)}]")
-                elif base_type in ["dict", "Dict"]: field_widget.setText(f"{{'key': {random.randint(1,10)}}}")
-                else: field_widget.setText("random_val")
-            elif isinstance(field_widget, QSpinBox): field_widget.setValue(random.randint(field_widget.minimum(), min(field_widget.maximum(), 100)))
-            elif isinstance(field_widget, QCheckBox): field_widget.setChecked(random.choice([True, False]))
+                if field_type == "List[float]":
+                    field_widget.setText(str([round(random.uniform(0, 100), 2) for _ in range(3)]))
+                elif field_type == "List[int]":
+                    field_widget.setText(str([random.randint(1, 100) for _ in range(3)]))
+                elif field_type == "List[str]":
+                    field_widget.setText(str([''.join(random.choices(string.ascii_letters, k=5)) for _ in range(3)]))
+                elif field_type == "Dict[str, str]":
+                    field_widget.setText(str({f"key_{i}": ''.join(random.choices(string.ascii_letters, k=5)) for i in range(2)}))
+                elif field_type == "Dict[str, int]":
+                    field_widget.setText(str({f"key_{i}": random.randint(1, 100) for i in range(2)}))
+                elif field_type == "Dict[str, float]":
+                    field_widget.setText(str({f"key_{i}": round(random.uniform(1, 100), 2) for i in range(2)}))
+                elif field_type in ["Set[int]", "FrozenSet[int]"]:
+                    field_widget.setText(str({random.randint(1, 100) for _ in range(3)}))
+                elif field_type in ["Set[float]", "FrozenSet[float]"]:
+                    field_widget.setText(str({round(random.uniform(1, 100), 2) for _ in range(3)}))
+                elif field_type in ["Set[str]", "FrozenSet[str]"]:
+                    field_widget.setText(str({''.join(random.choices(string.ascii_letters, k=5)) for _ in range(3)}))
+                elif field_type == "float":
+                    field_widget.setText(f"{random.uniform(0, 100):.2f}")
+                elif field_type == "str":
+                    field_widget.setText(''.join(random.choices(string.ascii_letters + ' ', k=10)))
+                else:
+                    field_widget.setText("random_val")
+            elif isinstance(field_widget, QSpinBox):
+                field_widget.setValue(random.randint(field_widget.minimum(), min(field_widget.maximum(), 100)))
+            elif isinstance(field_widget, QCheckBox):
+                field_widget.setChecked(random.choice([True, False]))
             elif isinstance(field_widget, QComboBox):  # Composition
-                if field_widget.count() > 1: # Has options other than "(Brak)"
+                if field_widget.count() > 1:
                     field_widget.setCurrentIndex(random.randint(1, field_widget.count() - 1))
-                else: field_widget.setCurrentIndex(0)
+                else:
+                    field_widget.setCurrentIndex(0)
 
     def _create_predefined_objects(self):
         """Creates predefined objects for all available classes using their fields."""
@@ -749,7 +758,7 @@ class ObjectGeneratorApp(QMainWindow):
                 continue
         
         if created_objects:
-            self.objects_changed.emit()
+            self.objects_changed.emit()  # Dodaj tę linię, aby odświeżyć interfejs
             QMessageBox.information(
                 self, "Sukces", 
                 f"Utworzono przykładowe obiekty: {', '.join(created_objects)}"
@@ -771,125 +780,81 @@ class ObjectGeneratorApp(QMainWindow):
         if not object_name:
             QMessageBox.warning(self, "Błąd", "Nazwa obiektu nie może być pusta.")
             return
-        if not object_name.isidentifier() or object_name in ['None', 'True', 'False']: # Basic check
-             QMessageBox.warning(self, "Błąd", f"Nazwa obiektu '{object_name}' jest nieprawidłowa.")
-             return
-
-        is_update = object_name in self.objects
-        target_class_obj = self.classes[class_name]['class_obj']
-
-        # Warn if updating an object but the class selection changed
-        if is_update and not isinstance(self.objects[object_name], target_class_obj):
-              reply = QMessageBox.question(self, "Zmiana Typu Obiektu",
-                                         f"Obiekt '{object_name}' jest typu '{self.objects[object_name].__class__.__name__}', "
-                                         f"a wybrano klasę '{class_name}'.\n"
-                                         f"Kontynuacja spowoduje próbę aktualizacji atrybutów nowej klasy.\n"
-                                         f"Czy chcesz kontynuować?",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-              if reply == QMessageBox.StandardButton.No: return
 
         attributes = {}
         conversion_errors = []
-        valid_field_names_for_class = {f_info['field']['name'] for f_info in self._get_all_fields_recursive(class_name)}
 
-        # Collect and validate attributes from form
         for i in range(self.object_fields_layout.rowCount()):
             label_item = self.object_fields_layout.itemAt(i, QFormLayout.ItemRole.LabelRole)
             field_item = self.object_fields_layout.itemAt(i, QFormLayout.ItemRole.FieldRole)
-            if not label_item or not field_item: continue
+            if not label_item or not field_item:
+                continue
+
             label_widget = label_item.widget()
             field_widget = field_item.widget()
-            if not isinstance(label_widget, QLabel) or not field_widget: continue
+            if not isinstance(label_widget, QLabel) or not field_widget:
+                continue
 
-            try: field_name = label_widget.text().split('(')[0].strip()
-            except Exception: continue # Skip if label bad format
+            try:
+                field_name = label_widget.text().split('(')[0].strip()
+                field_type = label_widget.text().split('(')[1][:-1].strip()
+            except Exception:
+                continue
 
-            # Only process fields relevant to the currently selected class
-            if field_name not in valid_field_names_for_class:
-                 continue
-
-            value: Any = None
+            value = None
             try:
                 if isinstance(field_widget, QLineEdit):
                     text_value = field_widget.text()
-                    # Attempt smart conversion based on expected type (from label for simplicity)
-                    expected_type_str = label_widget.text().split('(')[1][:-1].strip()
-                    base_expected_type = expected_type_str.split('[')[0]
-
-                    if not text_value: # Handle empty input based on type (allow None if Optional?)
-                        is_optional = 'Optional' in expected_type_str or 'Union' in expected_type_str and ('None' in expected_type_str or 'NoneType' in expected_type_str)
-                        if is_optional: value = None
-                        elif base_expected_type == "int": value = 0
-                        elif base_expected_type == "float": value = 0.0
-                        elif base_expected_type == "bool": value = False
-                        elif base_expected_type in ["list", "List"]: value = []
-                        elif base_expected_type in ["dict", "Dict"]: value = {}
-                        elif base_expected_type == "str": value = ""
-                        else: value = None # Default None for other empty types
+                    if not text_value:
+                        value = None
                     else:
-                        # Attempt conversion
-                        if base_expected_type == "int": value = int(text_value)
-                        elif base_expected_type == "float": value = float(text_value)
-                        elif base_expected_type == "bool":
-                             lower_val = text_value.lower()
-                             if lower_val in ['true', '1', 'yes', 't']: value = True
-                             elif lower_val in ['false', '0', 'no', 'f']: value = False
-                             else: raise ValueError("Oczekiwano wartości logicznej")
-                        elif base_expected_type in ["list", "List", "dict", "Dict", "set", "Set", "tuple", "Tuple"]:
-                            try: value = ast.literal_eval(text_value) # Use literal_eval for safety
-                            except (ValueError, SyntaxError) as e: raise ValueError(f"Nieprawidłowy format dla {base_expected_type}: {e}")
-                        elif base_expected_type == "str": value = text_value
-                        else: value = text_value # Treat unknown types as strings
-
-                elif isinstance(field_widget, QSpinBox): value = field_widget.value()
-                elif isinstance(field_widget, QCheckBox): value = field_widget.isChecked()
-                elif isinstance(field_widget, QComboBox): # Composition
+                        # Parsowanie specjalnych typów
+                        if field_type in ["List[float]", "List[int]", "List[str]"]:
+                            value = ast.literal_eval(text_value)
+                        elif field_type in ["Dict[str, str]", "Dict[str, int]", "Dict[str, float]"]:
+                            value = ast.literal_eval(text_value)
+                        elif field_type in ["Set[int]", "Set[float]", "Set[str]", "FrozenSet[int]", "FrozenSet[float]", "FrozenSet[str]"]:
+                            value = ast.literal_eval(text_value)
+                        elif field_type == "float":
+                            value = float(text_value)
+                        elif field_type == "str":
+                            value = text_value
+                        else:
+                            value = text_value
+                elif isinstance(field_widget, QSpinBox):
+                    value = field_widget.value()
+                elif isinstance(field_widget, QCheckBox):
+                    value = field_widget.isChecked()
+                elif isinstance(field_widget, QComboBox):  # Composition
                     selected_text = field_widget.currentText()
                     value = None if selected_text == "(Brak)" else self.objects.get(selected_text)
-                    if selected_text != "(Brak)" and value is None:
-                         raise ValueError(f"Wybrany obiekt '{selected_text}' nie istnieje.")
 
                 attributes[field_name] = value
-
-            except (ValueError, TypeError) as e:
+            except (ValueError, TypeError, SyntaxError) as e:
                 conversion_errors.append(f"Pole '{field_name}': {e}")
 
         if conversion_errors:
             QMessageBox.warning(self, "Błąd danych wejściowych", "Popraw błędy:\n\n" + "\n".join(conversion_errors))
             return
 
-        # Create or update the object
+        # Tworzenie lub aktualizacja obiektu
         try:
-            if is_update: # Update existing object
+            if object_name in self.objects:  # Update
                 obj = self.objects[object_name]
-                print(f"Updating '{object_name}' with: {attributes}") # Debug
                 for attr_name, attr_value in attributes.items():
-                    setattr(obj, attr_name, attr_value) # Direct attribute setting
-                # Update metadata (store the values just set)
+                    setattr(obj, attr_name, attr_value)
                 self.object_data[object_name]['attributes'].update(attributes)
-                self.object_data[object_name]['class'] = class_name # Update class in metadata too
-            else: # Create new object
-                 print(f"Creating '{object_name}' with: {attributes}") # Debug
-                 # Prepare constructor args (filter attributes based on __init__ if possible, otherwise pass all)
-                 # For simplicity here, pass all collected valid attributes
-                 constructor_args = attributes
-                 obj = target_class_obj(**constructor_args)
-                 self.objects[object_name] = obj
-                 # Store metadata (use a copy of attributes used)
-                 self.object_data[object_name] = {'class': class_name, 'attributes': constructor_args.copy()}
-
+            else:  # Create new
+                constructor_args = attributes
+                obj = self.classes[class_name]['class_obj'](**constructor_args)
+                self.objects[object_name] = obj
+                self.object_data[object_name] = {'class': class_name, 'attributes': constructor_args.copy()}
 
             self.object_name_input.clear()
-            self.objects_changed.emit() # Update tree and combos
-            QMessageBox.information(self, "Sukces", f"Obiekt '{object_name}' {'zaktualizowany' if is_update else 'utworzony'}.")
-
-        except (TypeError, AttributeError, Exception) as e:
-            QMessageBox.critical(self, f"Błąd {'Aktualizacji' if is_update else 'Tworzenia'}",
-                                 f"Nie udało się {'zaktualizować' if is_update else 'utworzyć'} obiektu '{object_name}'.\n"
-                                 f"Sprawdź zgodność typów i argumentów konstruktora.\n\nBłąd: {str(e)}")
-            # Clean up if creation failed midway
-            if not is_update and object_name in self.objects: del self.objects[object_name]
-            if not is_update and object_name in self.object_data: del self.object_data[object_name]
+            self.objects_changed.emit()
+            QMessageBox.information(self, "Sukces", f"Obiekt '{object_name}' {'zaktualizowany' if object_name in self.objects else 'utworzony'}.")
+        except Exception as e:
+            QMessageBox.critical(self, "Błąd", f"Nie udało się utworzyć/zaktualizować obiektu: {e}")
 
     def _edit_selected_object(self):
         """Loads the selected object's data into the form for editing."""
@@ -1404,10 +1369,13 @@ class ObjectGeneratorApp(QMainWindow):
         for obj_name in sorted_object_names:
             obj_instance = self.objects.get(obj_name)
             obj_metadata = self.object_data.get(obj_name)
-            if obj_instance is None or obj_metadata is None: continue # Skip inconsistent data
+            if obj_instance is None or obj_metadata is None:
+                continue  # Skip inconsistent data
 
             obj_item = QTreeWidgetItem([obj_name])
-            font = obj_item.font(0); font.setBold(True); obj_item.setFont(0, font)
+            font = obj_item.font(0)
+            font.setBold(True)
+            obj_item.setFont(0, font)
             self.object_tree.addTopLevelItem(obj_item)
 
             class_name = obj_instance.__class__.__name__
@@ -1422,37 +1390,64 @@ class ObjectGeneratorApp(QMainWindow):
                 field_names = sorted([info['field']['name'] for info in all_fields_info])
 
                 if not field_names:
-                     attributes_item.addChild(QTreeWidgetItem(["(Brak pól)", ""]))
+                    attributes_item.addChild(QTreeWidgetItem(["(Brak pól)", ""]))
 
                 for attr_name in field_names:
-                    attr_value_str = "<Nie ustawiono>"
+                    attr_value_str = "<Błąd odczytu>"  # Initialize default value
                     try:
                         attr_value = getattr(obj_instance, attr_name)
-                        if attr_value is None: attr_value_str = "None"
-                        elif isinstance(attr_value, (str, int, float, bool)): attr_value_str = repr(attr_value)
-                        elif isinstance(attr_value, (list, dict, tuple, set)):
-                             repr_val = repr(attr_value)
-                             attr_value_str = repr_val[:80] + ('...' if len(repr_val) > 80 else '')
-                        elif isinstance(attr_value, object) and hasattr(attr_value, '__class__'):
-                             found_ref_name = None
-                             for ref_name, ref_instance in self.objects.items():
-                                 if ref_instance is attr_value:
-                                     found_ref_name = ref_name; break
-                             if found_ref_name:
-                                  attr_value_str = f"-> {found_ref_name} ({attr_value.__class__.__name__})"
-                             else: attr_value_str = f"<{attr_value.__class__.__name__}: {str(attr_value)[:50]}>"
-                        else: attr_value_str = str(attr_value)
-                    except AttributeError: attr_value_str = "<Atrybut nie istnieje>"
-                    except Exception as e: attr_value_str = f"<Błąd odczytu: {e}>"
+                        
+                        if attr_value is None:
+                            attr_value_str = "None"
+                        elif isinstance(attr_value, str):
+                            attr_value_str = f'"{attr_value}"'
+                        elif isinstance(attr_value, (int, float, bool)):
+                            attr_value_str = str(attr_value)
+                        elif isinstance(attr_value, list):
+                            if attr_value:  # Check if list is not empty
+                                # Check if it's a list of known objects
+                                is_list_of_known_objects = all(
+                                    any(o is item for _, o in self.objects.items()) 
+                                    for item in attr_value
+                                )
+                                if is_list_of_known_objects:
+                                    item_names = []
+                                    for item in attr_value:
+                                        found_name = None
+                                        for ref_name, ref_instance in self.objects.items():
+                                            if ref_instance is item:
+                                                found_name = ref_name
+                                                break
+                                        item_names.append(f"-> {found_name}" if found_name else f"<{item.__class__.__name__}>")
+                                    attr_value_str = f"[{', '.join(item_names)}]"
+                                else:  # Generic list
+                                    repr_val = repr(attr_value)
+                                    attr_value_str = repr_val[:80] + ('...' if len(repr_val) > 80 else '')
+                            else:  # Empty list
+                                attr_value_str = "[]"
+                        elif isinstance(attr_value, dict):
+                            attr_value_str = str({k: str(v)[:20] + ('...' if len(str(v)) > 20 else '') 
+                                                for k, v in attr_value.items()})
+                        elif any(attr_value is obj for obj in self.objects.values()):
+                            # Handle single object reference
+                            ref_name = next((name for name, obj in self.objects.items() 
+                                        if obj is attr_value), None)
+                            attr_value_str = f"-> {ref_name}" if ref_name else f"<{attr_value.__class__.__name__}>"
+                        else:
+                            attr_value_str = str(attr_value)[:80] + ('...' if len(str(attr_value)) > 80 else '')
+                    except AttributeError:
+                        attr_value_str = "<Atrybut nie istnieje>"
+                    except Exception as e:
+                        attr_value_str = f"<Błąd odczytu: {e}>"
 
                     attr_item = QTreeWidgetItem([attr_name, attr_value_str])
                     attributes_item.addChild(attr_item)
 
             except Exception as e:
-                 attributes_item.addChild(QTreeWidgetItem([f"<Błąd przetwarzania: {e}>", ""]))
+                attributes_item.addChild(QTreeWidgetItem([f"<Błąd przetwarzania: {e}>", ""]))
 
-            obj_item.setExpanded(True) # Expand object node
-            attributes_item.setExpanded(True) # Expand attributes node
+            obj_item.setExpanded(True)  # Expand object node
+            attributes_item.setExpanded(True)  # Expand attributes node
 
     def _update_composition_combos(self):
         """Updates composition QComboBoxes in the creation form."""
@@ -1513,27 +1508,62 @@ class ObjectGeneratorApp(QMainWindow):
                 self._perform_object_connection(target_name, attr_name, source_name)
             # else: QMessageBox.warning(self,"Anulowano","Nie wybrano poprawnie obiektów/atrybutu.")
 
-    def _perform_object_connection(self, target_obj_name: str, attribute_name: str, source_obj_name: str):
-        """Sets the target object's attribute to the source object."""
+# In class ObjectGeneratorApp:
+    # ...
+    def _perform_object_connection(self, target_obj_name: str, attribute_name: str, source_obj_data: Any): # Any is str or List[str]
+        """Sets the target object's attribute(s)."""
         try:
             target_obj = self.objects[target_obj_name]
-            source_obj = self.objects.get(source_obj_name) # Use .get() as source might be "(Brak)" -> None implicitly handled later
+            
+            connection_message_suffix = ""
 
-            # Perform the connection
-            print(f"Connecting: Setting {target_obj_name}.{attribute_name} = {source_obj_name if source_obj else 'None'}")
-            setattr(target_obj, attribute_name, source_obj)
+            if isinstance(source_obj_data, list): # Target attribute is a list of objects
+                # Get the list attribute from the target object, or initialize if not present/not a list
+                target_list_attr = getattr(target_obj, attribute_name, None)
+                if not isinstance(target_list_attr, list):
+                    print(f"Info: Attribute '{attribute_name}' on '{target_obj_name}' was not a list. Initializing.")
+                    target_list_attr = []
+                    setattr(target_obj, attribute_name, target_list_attr)
+                
+                target_list_attr.clear() # Replace current content
+                
+                actual_connected_names = []
+                for src_name in source_obj_data: # source_obj_data is List[str]
+                    source_obj_instance = self.objects.get(src_name)
+                    if source_obj_instance:
+                        target_list_attr.append(source_obj_instance)
+                        actual_connected_names.append(src_name)
+                    else:
+                        print(f"Warning: Source object '{src_name}' not found during list connection.")
+                
+                # For metadata, store the list of actual objects (references)
+                if target_obj_name in self.object_data and 'attributes' in self.object_data[target_obj_name]:
+                    self.object_data[target_obj_name]['attributes'][attribute_name] = list(target_list_attr) # Store a copy
 
-            # Update metadata
-            if target_obj_name in self.object_data and 'attributes' in self.object_data[target_obj_name]:
-                 self.object_data[target_obj_name]['attributes'][attribute_name] = source_obj # Store actual reference
-                 print(f"Updated metadata for {target_obj_name}.{attribute_name}")
-            else: print(f"Warning: Metadata not found/updated for {target_obj_name}")
+                connection_message_suffix = f"-> [{', '.join(actual_connected_names)}]"
+                print(f"Connecting list: {target_obj_name}.{attribute_name} set to {len(actual_connected_names)} object(s).")
 
-            self.objects_changed.emit() # Update UI
-            QMessageBox.information(self, "Sukces", f"Połączono: {target_obj_name}.{attribute_name} -> {source_obj_name if source_obj else 'None'}.")
+            else: # Target attribute is a single object (source_obj_data is str)
+                source_obj_instance = self.objects.get(source_obj_data) # source_obj_data is single name or "(Brak)"
+                
+                setattr(target_obj, attribute_name, source_obj_instance)
 
-        except KeyError as e: QMessageBox.critical(self, "Błąd", f"Nie znaleziono obiektu: {e}")
-        except (AttributeError, TypeError, Exception) as e: QMessageBox.critical(self, "Błąd Połączenia", f"Nie udało się ustawić atrybutu.\nBłąd: {e}")
+                # Update metadata
+                if target_obj_name in self.object_data and 'attributes' in self.object_data[target_obj_name]:
+                    self.object_data[target_obj_name]['attributes'][attribute_name] = source_obj_instance
+                
+                connection_message_suffix = f"-> {source_obj_data if source_obj_instance else 'None'}"
+                print(f"Connecting single: {target_obj_name}.{attribute_name} = {source_obj_data if source_obj_instance else 'None'}")
+
+            self.objects_changed.emit()
+            QMessageBox.information(self, "Sukces", f"Połączono: {target_obj_name}.{attribute_name} {connection_message_suffix}.")
+
+        except KeyError as e:
+            QMessageBox.critical(self, "Błąd", f"Nie znaleziono obiektu: {e}")
+        except Exception as e: # Catch broader exceptions like AttributeError
+            QMessageBox.critical(self, "Błąd Połączenia", f"Nie udało się ustawić atrybutu.\nBłąd: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 # --- Application Entry Point ---

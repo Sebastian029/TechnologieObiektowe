@@ -1,12 +1,12 @@
-from typing import Any, Dict, List, Optional
+from typing import Dict, FrozenSet, List, Set, Tuple
 
 
 
-class Klasa:
-    def __init__(self, nowa: str):
-        self.nowa = nowa
+class Wielka:
+    def __init__(self, ddd: Set[str]):
+        self.ddd: Set[str] = ddd
 
-class Klasa2:
-    def __init__(self, stara: str, composed_klasa_1: Optional['Klasa'] = None):
-        self.composed_klasa_1 = composed_klasa_1
-        self.stara = stara
+class Klasa(Wielka):
+    def __init__(self, ddd: Set[str], sss: Set[str]):
+        super().__init__(ddd)
+        self.sss: Set[str] = sss
