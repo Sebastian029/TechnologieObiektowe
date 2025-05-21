@@ -188,7 +188,7 @@ class SearchTab(QWidget):
         self.cassandra_rb.setChecked(False)
         self._set_db_type_mongodb_ui_elements()
         self._update_operators()
-        self._clear_connection()
+        self._update_ui_for_current_connection()
 
     def _set_db_type_neo4j(self):
         if self.current_db_type == "neo4j" and self.neo4j_rb.isChecked(): return
@@ -198,7 +198,7 @@ class SearchTab(QWidget):
         self.cassandra_rb.setChecked(False)
         self._set_db_type_neo4j_ui_elements()
         self._update_operators()
-        self._clear_connection()
+        self._update_ui_for_current_connection()
 
     def _set_db_type_cassandra(self):
         if self.current_db_type == "cassandra" and self.cassandra_rb.isChecked(): return
@@ -208,7 +208,40 @@ class SearchTab(QWidget):
         self.cassandra_rb.setChecked(True)
         self._set_db_type_cassandra_ui_elements()
         self._update_operators()
-        self._clear_connection()
+        self._update_ui_for_current_connection()
+
+    def _update_ui_for_current_connection(self):
+        """Update UI based on current connection status without resetting connection"""
+        if self.current_db_type == "mongodb" and self.client:
+            self.connection_status.setText("Połączono (MongoDB)")
+            self.connection_status.setStyleSheet("color: green; font-weight: bold;")
+            self.connect_btn.setText("Przełącz")
+            self.search_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+            self._load_databases()
+        elif self.current_db_type == "neo4j" and self.driver:
+            self.connection_status.setText("Połączono (Neo4j)")
+            self.connection_status.setStyleSheet("color: green; font-weight: bold;")
+            self.connect_btn.setText("Przełącz")
+            self.search_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+            self._load_neo4j_labels()
+        elif self.current_db_type == "cassandra" and self.cassandra_session:
+            self.connection_status.setText("Połączono (Cassandra)")
+            self.connection_status.setStyleSheet("color: green; font-weight: bold;")
+            self.connect_btn.setText("Przełącz")
+            self.search_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+            self._load_cassandra_keyspaces()
+        else:
+            self.connection_status.setText("Niepołączono")
+            self.connection_status.setStyleSheet("color: red; font-weight: bold;")
+            self.connect_btn.setText("Połącz")
+            self.search_btn.setEnabled(False)
+            self.clear_btn.setEnabled(False)
+            self.db_combo.clear()
+            self.entity_combo.clear()
+            self.field_combo.clear()
 
     def _update_operators(self):
         self.operator_combo.clear()
@@ -226,7 +259,10 @@ class SearchTab(QWidget):
             ])
         elif self.current_db_type == "cassandra":
             self.operator_combo.addItems([
-                "równa się (=)",
+                "równa się (=)", "nie równa się (!=)",
+                "większe niż (>)", "większe lub równe (>=)",
+                "mniejsze niż (<)", "mniejsze lub równe (<=)",
+                "zawiera", "zaczyna się od", "kończy się na"
             ])
 
     def _connect_to_db(self):
@@ -238,15 +274,19 @@ class SearchTab(QWidget):
             self._connect_to_cassandra_search()
 
     def _connection_failed_cleanup(self):
-        if self.client: self.client.close(); self.client = None
-        if self.driver: self.driver.close(); self.driver = None
-        if self.cassandra_session: self.cassandra_session.shutdown(); self.cassandra_session = None
-        if self.cassandra_cluster: self.cassandra_cluster.shutdown(); self.cassandra_cluster = None
+        if self.current_db_type == "mongodb":
+            if self.client: self.client.close(); self.client = None
+        elif self.current_db_type == "neo4j":
+            if self.driver: self.driver.close(); self.driver = None
+        elif self.current_db_type == "cassandra":
+            if self.cassandra_session: self.cassandra_session.shutdown(); self.cassandra_session = None
+            if self.cassandra_cluster: self.cassandra_cluster.shutdown(); self.cassandra_cluster = None
 
         self.connect_btn.setText("Połącz")
         self.search_btn.setEnabled(False)
         self.clear_btn.setEnabled(False)
         self._clear_search()
+        self._update_ui_for_current_connection()  # This should reset the UI status
 
     def _connect_to_mongodb(self):
         connection_string = self.connection_input.text().strip()
@@ -254,22 +294,22 @@ class SearchTab(QWidget):
             if self.client: self.client.close()
             self.client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
             self.client.admin.command('ping')
-            self.connection_status.setText("Połączono (MongoDB)")
-            self.connection_status.setStyleSheet("color: green; font-weight: bold;")
-            self.connect_btn.setText("Przełącz")
-            self.search_btn.setEnabled(True);
-            self.clear_btn.setEnabled(True)
-            self._load_databases()
+            if self.driver: self.driver.close(); self.driver = None
+            if self.cassandra_session: self.cassandra_session.shutdown(); self.cassandra_session = None
+            if self.cassandra_cluster: self.cassandra_cluster.shutdown(); self.cassandra_cluster = None
+            self._update_ui_for_current_connection()
         except ConnectionFailure as e:
+            self.client = None
             self.connection_status.setText("Błąd połączenia (MongoDB)")
             self.connection_status.setStyleSheet("color: red; font-weight: bold;")
             QMessageBox.critical(self, "Błąd", f"Nie można połączyć z MongoDB:\n{str(e)}")
-            self._connection_failed_cleanup()
+            self._update_ui_for_current_connection()
         except Exception as e:
+            self.client = None
             self.connection_status.setText("Błąd (MongoDB)")
             self.connection_status.setStyleSheet("color: red; font-weight: bold;")
             QMessageBox.critical(self, "Błąd", f"Wystąpił błąd:\n{str(e)}")
-            self._connection_failed_cleanup()
+            self._update_ui_for_current_connection()
 
     def _connect_to_neo4j(self):
         uri = self.connection_input.text().strip()
@@ -280,22 +320,22 @@ class SearchTab(QWidget):
             self.driver = GraphDatabase.driver(uri, auth=(username, password))
             with self.driver.session(database="neo4j") as session:
                 session.run("RETURN 1 AS test").single()
-            self.connection_status.setText("Połączono (Neo4j)")
-            self.connection_status.setStyleSheet("color: green; font-weight: bold;")
-            self.connect_btn.setText("Przełącz")
-            self.search_btn.setEnabled(True);
-            self.clear_btn.setEnabled(True)
-            self._load_neo4j_labels()
+            if self.client: self.client.close(); self.client = None
+            if self.cassandra_session: self.cassandra_session.shutdown(); self.cassandra_session = None
+            if self.cassandra_cluster: self.cassandra_cluster.shutdown(); self.cassandra_cluster = None
+            self._update_ui_for_current_connection()
         except (ServiceUnavailable, AuthError) as e:
+            self.driver = None
             self.connection_status.setText("Błąd połączenia/autoryzacji (Neo4j)")
             self.connection_status.setStyleSheet("color: red; font-weight: bold;")
             QMessageBox.critical(self, "Błąd", f"Nie można połączyć z Neo4j lub błąd autoryzacji:\n{str(e)}")
-            self._connection_failed_cleanup()
+            self._update_ui_for_current_connection()
         except Exception as e:
+            self.driver = None
             self.connection_status.setText("Błąd (Neo4j)")
             self.connection_status.setStyleSheet("color: red; font-weight: bold;")
             QMessageBox.critical(self, "Błąd", f"Wystąpił błąd podczas łączenia z Neo4j:\n{str(e)}")
-            self._connection_failed_cleanup()
+            self._update_ui_for_current_connection()
 
     def _connect_to_cassandra_search(self):
         contact_points_str = self.connection_input.text().strip()
@@ -318,24 +358,24 @@ class SearchTab(QWidget):
             self.cassandra_cluster = Cluster(contact_points=contact_points, auth_provider=auth_provider,
                                              connect_timeout=10)
             self.cassandra_session = self.cassandra_cluster.connect()
-
-            self.connection_status.setText("Połączono (Cassandra)")
-            self.connection_status.setStyleSheet("color: green; font-weight: bold;")
-            self.connect_btn.setText("Przełącz")
-            self.search_btn.setEnabled(True);
-            self.clear_btn.setEnabled(True)
-            self._load_cassandra_keyspaces()
+            if self.client: self.client.close(); self.client = None
+            if self.driver: self.driver.close(); self.driver = None
+            self._update_ui_for_current_connection()
 
         except NoHostAvailable as e:
+            self.cassandra_cluster = None;
+            self.cassandra_session = None
             self.connection_status.setText("Błąd połączenia (Cassandra)")
             self.connection_status.setStyleSheet("color: red; font-weight: bold;")
             QMessageBox.critical(self, "Błąd", f"Nie można połączyć z Cassandra (NoHostAvailable):\n{str(e)}")
-            self._connection_failed_cleanup()
+            self._update_ui_for_current_connection()
         except Exception as e:
+            self.cassandra_cluster = None;
+            self.cassandra_session = None
             self.connection_status.setText("Błąd (Cassandra)")
             self.connection_status.setStyleSheet("color: red; font-weight: bold;")
             QMessageBox.critical(self, "Błąd", f"Wystąpił błąd podczas łączenia z Cassandra:\n{str(e)}")
-            self._connection_failed_cleanup()
+            self._update_ui_for_current_connection()
 
     def _clear_connection(self):
         if self.client: self.client.close(); self.client = None
@@ -352,6 +392,7 @@ class SearchTab(QWidget):
         self.search_btn.setEnabled(False);
         self.clear_btn.setEnabled(False)
         self._clear_search()
+        self._update_ui_for_current_connection()
 
     def _load_databases(self):
         if not self.client: return
@@ -499,6 +540,8 @@ class SearchTab(QWidget):
         if not field and not ("istnieje relacja z" in operator): QMessageBox.warning(self, "Ostrzeżenie",
                                                                                      "Wybierz pole Neo4j."); return
         if not self.driver: QMessageBox.critical(self, "Błąd", "Neo4j: Brak połączenia."); return
+
+        query = ""  # Initialize for error message
         try:
             query_value = self._attempt_type_conversion(value_str)
             query, params = self._build_neo4j_query(label, field, operator, query_value)
@@ -512,20 +555,22 @@ class SearchTab(QWidget):
                     processed_record = False
                     for key_rec in record.keys():
                         val = record[key_rec]
-                        if hasattr(val, 'labels') and callable(getattr(val, 'labels')):
-                            if val not in neo4j_results["nodes"]: neo4j_results["nodes"].append(
-                                val); processed_record = True
-                        elif hasattr(val, 'type') and callable(getattr(val, 'type')):
-                            if val not in neo4j_results["relationships"]: neo4j_results["relationships"].append(
-                                val); processed_record = True
-                        elif hasattr(val, 'start_node') and hasattr(val, 'relationships'):
-                            if val not in neo4j_results["paths"]: neo4j_results["paths"].append(
-                                val); processed_record = True
-                    if not processed_record and record not in neo4j_results["raw_records"]:
+                        if hasattr(val, 'labels') and hasattr(val, 'element_id'):  # Node
+                            if val not in neo4j_results["nodes"]: neo4j_results["nodes"].append(val)
+                            processed_record = True
+                        elif hasattr(val, 'type') and hasattr(val, 'start_node') and hasattr(val,
+                                                                                             'end_node'):  # Relationship
+                            if val not in neo4j_results["relationships"]: neo4j_results["relationships"].append(val)
+                            processed_record = True
+                        elif hasattr(val, 'start_node') and hasattr(val, 'nodes') and hasattr(val,
+                                                                                              'relationships'):  # Path
+                            if val not in neo4j_results["paths"]: neo4j_results["paths"].append(val)
+                            processed_record = True
+                    if not processed_record and record not in neo4j_results["raw_records"]:  # Other (scalar, map, list)
                         neo4j_results["raw_records"].append(record)
             self._display_results(neo4j_results, count, "neo4j")
         except Exception as e:
-            QMessageBox.critical(self, "Błąd", f"Błąd wyszukiwania Neo4j:\n{str(e)}")
+            QMessageBox.critical(self, "Błąd", f"Błąd wyszukiwania Neo4j:\n{str(e)}\nZapytanie: {query}")
 
     def _perform_cassandra_search(self):
         keyspace = self.current_db_name
@@ -540,7 +585,7 @@ class SearchTab(QWidget):
         if not self.cassandra_session: QMessageBox.critical(self, "Błąd", "Cassandra: Brak połączenia."); return
 
         query_string = ""
-        params = {}
+        params = {}  # Not used with SimpleStatement like this, but for consistency in build_query return
 
         try:
             query_value = self._attempt_type_conversion_for_cassandra(value_str, keyspace, table, field)
@@ -552,7 +597,7 @@ class SearchTab(QWidget):
 
         except InvalidRequest as e:
             QMessageBox.critical(self, "Błąd Zapytania Cassandra",
-                                 f"Nieprawidłowe zapytanie CQL:\n{str(e)}\n\nZapytanie: {query_string}\nParametry: {params}")
+                                 f"Nieprawidłowe zapytanie CQL:\n{str(e)}\n\nZapytanie: {query_string}")
         except Exception as e:
             QMessageBox.critical(self, "Błąd", f"Błąd wyszukiwania Cassandra:\n{str(e)}")
 
@@ -579,9 +624,12 @@ class SearchTab(QWidget):
                     return float(value_str)
                 elif col_type_name == 'boolean':
                     return value_str.lower() == 'true'
+                # For other types like uuid, timestamp, date, text, varchar, inet, blob etc.
+                # string representation is often sufficient for simple WHERE clauses with string literals.
+                # More complex types or collections might need specific formatting not handled here.
                 return value_str
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError):  # Metadata lookup or conversion failed
+                pass  # Fallback to general conversion
         return self._attempt_type_conversion(value_str)
 
     def _build_mongodb_query(self, field, operator, value):
@@ -609,7 +657,7 @@ class SearchTab(QWidget):
     def _build_neo4j_query(self, label, field, operator, value):
         params = {"value": value}
         if "istnieje relacja z" in operator:
-            rel_type_str = str(value).strip()
+            rel_type_str = str(value).strip().replace('`', '')  # Basic sanitization
             q = f"MATCH (n:`{label}`)-[r{':`' + rel_type_str + '`' if rel_type_str else ''}]->(m) RETURN n, r, m LIMIT 100"
             return q, {}
 
@@ -643,29 +691,52 @@ class SearchTab(QWidget):
         full_q += " RETURN n LIMIT 100"
         return full_q, params
 
-    def _build_cassandra_query(self, keyspace, table, field, operator, value):
+    def _build_cassandra_query(self, keyspace: str, table: str, field: str, operator: str, value: Any):
         safe_keyspace = '"' + keyspace.replace('"', '""') + '"'
         safe_table = '"' + table.replace('"', '""') + '"'
         safe_field = '"' + field.replace('"', '""') + '"'
 
-        cql_value = ""
+        cql_value_str = ""
+
         if isinstance(value, str):
-            quoted_value = value.replace("'", "''")
-            cql_value = f"'{quoted_value}'"
+            escaped_user_value = value.replace("'", "''")
+            if operator == "zawiera":
+                cql_value_str = f"'%{escaped_user_value}%'"
+            elif operator == "zaczyna się od":
+                cql_value_str = f"'{escaped_user_value}%'"
+            elif operator == "kończy się na":
+                cql_value_str = f"'%{escaped_user_value}'"
+            else:
+                cql_value_str = f"'{escaped_user_value}'"
         elif isinstance(value, bool):
-            cql_value = str(value).lower()
+            cql_value_str = str(value).lower()
         else:
-            cql_value = str(value)
+            cql_value_str = str(value)
 
         query_string = f"SELECT * FROM {safe_keyspace}.{safe_table} "
-        params = {}
+        condition = ""
 
-        if "równa się (=)" in operator:
-            query_string += f"WHERE {safe_field} = {cql_value} "
+        if operator == "równa się (=)":
+            condition = f"{safe_field} = {cql_value_str}"
+        elif operator == "nie równa się (!=)":
+            condition = f"{safe_field} != {cql_value_str}"
+        elif operator == "większe niż (>)":
+            condition = f"{safe_field} > {cql_value_str}"
+        elif operator == "większe lub równe (>=)":
+            condition = f"{safe_field} >= {cql_value_str}"
+        elif operator == "mniejsze niż (<)":
+            condition = f"{safe_field} < {cql_value_str}"
+        elif operator == "mniejsze lub równe (<=)":
+            condition = f"{safe_field} <= {cql_value_str}"
+        elif operator == "zawiera" or operator == "zaczyna się od" or operator == "kończy się na":
+            condition = f"{safe_field} LIKE {cql_value_str}"
+
+        if condition:
+            query_string += f"WHERE {condition} "
 
         query_string += "LIMIT 100"
 
-        if "WHERE" in query_string and "ALLOW FILTERING" not in query_string:
+        if "WHERE" in query_string:
             is_pk_component = False
             if self.cassandra_cluster and self.cassandra_cluster.metadata:
                 try:
@@ -673,11 +744,14 @@ class SearchTab(QWidget):
                     pk_components = [col.name for col in table_meta.primary_key]
                     if field in pk_components:
                         is_pk_component = True
-                except Exception:
+                except (KeyError, AttributeError):
                     pass
+
             if not is_pk_component:
-                query_string += " ALLOW FILTERING"
-        return query_string, params
+                if "ALLOW FILTERING" not in query_string:
+                    query_string += " ALLOW FILTERING"
+
+        return query_string, {}  # Params not used for this SimpleStatement construction
 
     def _display_results(self, results_data: Any, count: int, db_type: str):
         self.results_tree.clear()
@@ -685,6 +759,7 @@ class SearchTab(QWidget):
 
         if db_type == "mongodb":
             self.results_tree.setHeaderLabels(["Pole", "Wartość"])
+            self.results_tree.setColumnCount(2)
             for i, doc in enumerate(results_data):
                 doc_id = doc.get('_id', f'Dokument {i + 1}')
                 doc_item = QTreeWidgetItem([f"Dokument: {doc_id}"])
@@ -693,16 +768,18 @@ class SearchTab(QWidget):
                 doc_item.setExpanded(True)
         elif db_type == "neo4j":
             self.results_tree.setHeaderLabels(["Typ", "Właściwości/Szczegóły"])
+            self.results_tree.setColumnCount(2)
             if results_data["nodes"]:
-                parent = QTreeWidgetItem(["Węzły"]);
+                parent = QTreeWidgetItem(["Węzły", f"{len(results_data['nodes'])} znaleziono"]);
                 self.results_tree.addTopLevelItem(parent)
                 for node in results_data["nodes"]:
-                    item = QTreeWidgetItem([f"Węzeł ({', '.join(node.labels)})", f"id: {node.element_id}"])
-                    self._add_data_to_tree(dict(node), item, db_type);
+                    labels_str = ", ".join(node.labels) if node.labels else "Brak etykiet"
+                    item = QTreeWidgetItem([f"Węzeł ({labels_str})", f"id: {node.element_id}"])
+                    self._add_data_to_tree(dict(node.items()), item, db_type);  # Pass properties
                     parent.addChild(item)
                 parent.setExpanded(True)
             if results_data["relationships"]:
-                parent = QTreeWidgetItem(["Relacje"]);
+                parent = QTreeWidgetItem(["Relacje", f"{len(results_data['relationships'])} znaleziono"]);
                 self.results_tree.addTopLevelItem(parent)
                 for rel in results_data["relationships"]:
                     item = QTreeWidgetItem([f"Relacja ({rel.type})", f"id: {rel.element_id}"])
@@ -710,38 +787,43 @@ class SearchTab(QWidget):
                         ["Od", f"({', '.join(rel.start_node.labels)}) id: {rel.start_node.element_id}"]))
                     item.addChild(
                         QTreeWidgetItem(["Do", f"({', '.join(rel.end_node.labels)}) id: {rel.end_node.element_id}"]))
-                    self._add_data_to_tree(dict(rel), item, db_type);
+                    self._add_data_to_tree(dict(rel.items()), item, db_type);  # Pass properties
                     parent.addChild(item)
                 parent.setExpanded(True)
             if results_data["paths"]:
-                parent = QTreeWidgetItem(["Ścieżki"]);
+                parent = QTreeWidgetItem(["Ścieżki", f"{len(results_data['paths'])} znaleziono"]);
                 self.results_tree.addTopLevelItem(parent)
                 for i, path_val in enumerate(results_data["paths"]):
                     item = QTreeWidgetItem([f"Ścieżka {i + 1}", f"Długość: {len(path_val.relationships)}"])
+                    # Could add more details about path nodes/rels here if needed
                     parent.addChild(item)
                 parent.setExpanded(True)
             if results_data["raw_records"]:
-                parent = QTreeWidgetItem(["Inne Wyniki"]);
+                parent = QTreeWidgetItem(["Inne Wyniki", f"{len(results_data['raw_records'])} rekordów"]);
                 self.results_tree.addTopLevelItem(parent)
-                for i, record_val in enumerate(results_data["raw_records"]):
+                for i, record_val in enumerate(results_data["raw_records"]):  # record_val is a Record
                     item = QTreeWidgetItem([f"Rekord {i + 1}"])
-                    self._add_data_to_tree(dict(record_val), item, db_type)
+                    self._add_data_to_tree(dict(record_val.items()), item, db_type)  # Pass record fields
                     parent.addChild(item)
                 parent.setExpanded(True)
         elif db_type == "cassandra":
             if results_data and isinstance(results_data, list) and len(results_data) > 0 and hasattr(results_data[0],
                                                                                                      '_fields'):
-                column_names = results_data[0]._fields
+                column_names = list(results_data[0]._fields)  # Ensure it's a list for setHeaderLabels
+                self.results_tree.setColumnCount(len(column_names))
                 self.results_tree.setHeaderLabels(column_names)
                 for i, row_data in enumerate(results_data):
                     row_values = [str(getattr(row_data, col, 'N/A')) for col in column_names]
                     row_item = QTreeWidgetItem(row_values)
                     self.results_tree.addTopLevelItem(row_item)
-            elif results_data:
+                for i in range(len(column_names)): self.results_tree.resizeColumnToContents(i)
+            elif results_data:  # Some data, but not in expected list of Rows format
                 self.results_tree.setHeaderLabels(["Wynik Cassandra"])
+                self.results_tree.setColumnCount(1)
                 self.results_tree.addTopLevelItem(QTreeWidgetItem([str(results_data)]))
-            else:
-                self.results_tree.setHeaderLabels(["Wyniki Cassandra"])
+            else:  # No results or empty list
+                self.results_tree.setHeaderLabels(["Wyniki Cassandra"])  # Default header
+                self.results_tree.setColumnCount(1)
                 self.results_tree.addTopLevelItem(QTreeWidgetItem(["Brak wyników"]))
 
     def _add_data_to_tree(self, data_item: Any, parent_tree_item: QTreeWidgetItem, db_type: str):
@@ -754,6 +836,7 @@ class SearchTab(QWidget):
                     child_item = QTreeWidgetItem([child_node_text])
                     self._add_data_to_tree(value, child_item, db_type)
                     parent_tree_item.addChild(child_item)
+                    child_item.setExpanded(True)
                 elif isinstance(value, list):
                     child_item = QTreeWidgetItem([child_node_text, f"(lista: {len(value)} el.)"])
                     parent_tree_item.addChild(child_item)
@@ -761,18 +844,28 @@ class SearchTab(QWidget):
                         list_el_item = QTreeWidgetItem([f"[{i}]"])
                         self._add_data_to_tree(list_el, list_el_item, db_type)
                         child_item.addChild(list_el_item)
+                    child_item.setExpanded(True)
                 else:
                     child_value_text = str(value)
                     item = QTreeWidgetItem([child_node_text, child_value_text])
                     parent_tree_item.addChild(item)
-        elif db_type == "neo4j":
-            if hasattr(data_item, 'labels') and callable(getattr(data_item, 'labels')):
-                pass
-            elif hasattr(data_item, 'type') and callable(getattr(data_item, 'type')):
-                pass
-            elif not parent_tree_item.text(1):
+        elif isinstance(data_item, list):  # Handle if top-level item is a list
+            parent_tree_item.setText(0,
+                                     parent_tree_item.text(0) + f" (lista: {len(data_item)} el.)")  # Update parent text
+            for i, list_el in enumerate(data_item):
+                list_el_item = QTreeWidgetItem([f"[{i}]"])
+                self._add_data_to_tree(list_el, list_el_item, db_type)
+                parent_tree_item.addChild(list_el_item)
+            parent_tree_item.setExpanded(True)
+
+        # For Neo4j direct properties under a node/rel item or scalar results in raw_records.
+        # If parent_tree_item is meant to hold a direct value in its second column.
+        elif db_type == "neo4j" and not isinstance(data_item, (dict, list)):
+            if parent_tree_item.text(1) == "":  # If value column is empty
                 parent_tree_item.setText(1, str(data_item))
-        elif not parent_tree_item.text(1):
+        # Generic case for non-dict/list if parent's second column is empty
+        elif not isinstance(data_item, (dict, list)) and parent_tree_item.columnCount() > 1 and parent_tree_item.text(
+                1) == "":
             parent_tree_item.setText(1, str(data_item))
 
     def _clear_search_inputs_only(self):
@@ -784,27 +877,13 @@ class SearchTab(QWidget):
         self.results_count.setText("Znaleziono wyników: 0")
         if self.current_db_type == "mongodb":
             self.results_tree.setHeaderLabels(["Pole", "Wartość"])
+            self.results_tree.setColumnCount(2)
         elif self.current_db_type == "neo4j":
             self.results_tree.setHeaderLabels(["Typ", "Właściwości/Szczegóły"])
+            self.results_tree.setColumnCount(2)
         elif self.current_db_type == "cassandra":
-            self.results_tree.setHeaderLabels(["Kolumna", "Wartość"])
-
-
-class DatabaseViewerApp(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Database Data Viewer")
-        self.setGeometry(100, 100, 1000, 800)
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-        self.mongo_tab = MongoDBTab()
-        self.neo4j_tab = Neo4jTab()
-        self.cassandra_tab = CassandraTab()
-        self.search_tab = SearchTab()
-        self.tabs.addTab(self.mongo_tab, "MongoDB")
-        self.tabs.addTab(self.neo4j_tab, "Neo4j")
-        self.tabs.addTab(self.cassandra_tab, "Cassandra")
-        self.tabs.addTab(self.search_tab, "Wyszukaj")
+            self.results_tree.setHeaderLabels(["Kolumna", "Wartość"])  # Default for Cassandra
+            self.results_tree.setColumnCount(2)  # Or adjust based on typical display
 
 
 class MongoDBTab(QWidget):
@@ -925,8 +1004,10 @@ class MongoDBTab(QWidget):
                     element_item = QTreeWidgetItem([f"[{i}]"])
                     if isinstance(item_in_list, dict):
                         self._add_dict_to_tree_mongo(item_in_list, element_item)
-                    elif isinstance(item_in_list, list):
+                    elif isinstance(item_in_list, list):  # Nested list
+                        # Simplified display for nested lists in this basic viewer tab
                         element_item.setText(1, f"(nested list: {len(item_in_list)} items)")
+                        # Could make this recursive if detailed nested list display is needed
                     else:
                         element_item.setText(1, str(item_in_list))
                     list_item_node.addChild(element_item)
@@ -995,7 +1076,7 @@ class Neo4jTab(QWidget):
         main_layout.addWidget(samples_panel)
         main_layout.addWidget(QLabel("Results:"))
         self.results_tree = QTreeWidget()
-        self.results_tree.setHeaderLabels(["Item", "Value"])
+        self.results_tree.setHeaderLabels(["Item", "Value"])  # Default, might be overridden by query keys
         self.results_tree.setColumnWidth(0, 300)
         main_layout.addWidget(self.results_tree)
         self.results_count_label = QLabel("Results: 0")
@@ -1008,7 +1089,7 @@ class Neo4jTab(QWidget):
         try:
             if self.driver: self.driver.close()
             self.driver = GraphDatabase.driver(uri, auth=(username, password))
-            with self.driver.session(database="neo4j") as session:
+            with self.driver.session(database="neo4j") as session:  # Use default "neo4j" or "system" database for ping
                 session.run("RETURN 1").single()
             self.connection_status.setText("Connected")
             self.connection_status.setStyleSheet("color: green; font-weight: bold;")
@@ -1032,95 +1113,113 @@ class Neo4jTab(QWidget):
         query = self.query_input.toPlainText().strip()
         if not query or not self.driver: return
         try:
-            with self.driver.session(database="neo4j") as session:
+            with self.driver.session(database="neo4j") as session:  # Use appropriate database if not default
                 result_cursor = session.run(query)
-                records = list(result_cursor)
+                records = list(result_cursor)  # Consume the cursor to get all records
+
                 if records and records[0].keys():
-                    self.results_tree.setHeaderLabels(records[0].keys())
-                elif records:
+                    self.results_tree.setHeaderLabels(list(records[0].keys()))  # Set headers from record keys
+                elif records:  # Single value returned per record, no explicit keys
                     self.results_tree.setHeaderLabels(["Value"])
-                else:
+                else:  # No records
                     self.results_tree.setHeaderLabels(["Result"])
+
                 self.results_count_label.setText(f"Results: {len(records)} (Returned by query)")
+
                 for i, record in enumerate(records):
+                    # If only one column in results, display it more directly
                     if len(record.keys()) == 1:
                         key = record.keys()[0]
+                        # Make the first column of tree item more descriptive if possible
                         record_item_text = f"Record {i + 1}"
-                        if key and key != record[key]:
-                            record_item_text += f": {key}"
-                        item = QTreeWidgetItem([record_item_text])
-                        self._add_neo4j_value_to_tree(record[key], item, is_direct_value=True)
-                    else:
-                        item = QTreeWidgetItem([f"Record {i + 1}"])
+                        # If the key is descriptive and not just the value itself (e.g. for RETURN n.name AS name)
+                        # This check might be too simple; often the key is just 'n' or 'r' for nodes/rels
+                        # if key and str(key) != str(record[key]):
+                        #    record_item_text += f": {key}"
+
+                        item = QTreeWidgetItem([record_item_text])  # Use a generic record identifier
+                        self._add_neo4j_value_to_tree(record[key], item, is_direct_value_for_item=True)
+                    else:  # Multiple columns in results
+                        item = QTreeWidgetItem([f"Record {i + 1}"])  # Top-level item for the record
                         for key in record.keys():
-                            sub_item = QTreeWidgetItem([key])
+                            sub_item = QTreeWidgetItem([key])  # Child item for each field in the record
                             self._add_neo4j_value_to_tree(record[key], sub_item)
                             item.addChild(sub_item)
                     self.results_tree.addTopLevelItem(item)
-                    if len(record.keys()) > 1:
-                        item.setExpanded(True)
+                    if len(record.keys()) > 1: item.setExpanded(True)  # Expand multi-field records
+
         except Exception as e:
             QMessageBox.warning(self, "Query Error", f"Error executing query:\n{str(e)}")
             self.results_count_label.setText("Results: 0")
             self.results_tree.setHeaderLabels(["Error"])
             self.results_tree.addTopLevelItem(QTreeWidgetItem([f"Query failed: {str(e)}"]))
 
-    def _add_neo4j_value_to_tree(self, value, parent_item: QTreeWidgetItem, is_direct_value=False):
+    def _add_neo4j_value_to_tree(self, value, parent_item: QTreeWidgetItem, is_direct_value_for_item=False):
         text_for_value_column = ""
         children_to_add = []
-        if hasattr(value, 'labels') and callable(getattr(value, 'labels')):
-            labels = ", ".join(value.labels)
+
+        if hasattr(value, 'labels') and hasattr(value, 'element_id'):  # Node
+            labels = ", ".join(value.labels) if value.labels else "No Labels"
             text_for_value_column = f"Node ({labels}) id: {value.element_id}"
             props_item = QTreeWidgetItem(["properties"])
-            for k, v_prop in dict(value).items():
-                prop_item = QTreeWidgetItem([str(k)])
-                self._add_neo4j_value_to_tree(v_prop, prop_item)
+            for k_prop, v_prop in dict(value.items()).items():  # Iterate over node properties
+                prop_item = QTreeWidgetItem([str(k_prop)])
+                self._add_neo4j_value_to_tree(v_prop, prop_item)  # Recursive call for property value
                 props_item.addChild(prop_item)
             if props_item.childCount() > 0: children_to_add.append(props_item)
-        elif hasattr(value, 'type') and callable(getattr(value, 'type')):
+
+        elif hasattr(value, 'type') and hasattr(value, 'start_node') and hasattr(value, 'end_node'):  # Relationship
             text_for_value_column = f"Relationship ({value.type}) id: {value.element_id}"
-            start_info = f"Start: ({', '.join(value.start_node.labels)}) id: {value.start_node.element_id}"
-            end_info = f"End: ({', '.join(value.end_node.labels)}) id: {value.end_node.element_id}"
-            children_to_add.append(QTreeWidgetItem(["from", start_info]))
-            children_to_add.append(QTreeWidgetItem(["to", end_info]))
+            start_node_info = f"Start: ({', '.join(value.start_node.labels)}) id: {value.start_node.element_id}"
+            end_node_info = f"End: ({', '.join(value.end_node.labels)}) id: {value.end_node.element_id}"
+            children_to_add.append(QTreeWidgetItem(["from_node", start_node_info]))
+            children_to_add.append(QTreeWidgetItem(["to_node", end_node_info]))
             props_item = QTreeWidgetItem(["properties"])
-            for k, v_prop in dict(value).items():
-                prop_item = QTreeWidgetItem([str(k)])
+            for k_prop, v_prop in dict(value.items()).items():  # Iterate over relationship properties
+                prop_item = QTreeWidgetItem([str(k_prop)])
                 self._add_neo4j_value_to_tree(v_prop, prop_item)
                 props_item.addChild(prop_item)
             if props_item.childCount() > 0: children_to_add.append(props_item)
-        elif hasattr(value, 'start_node') and hasattr(value, 'relationships'):
+
+        elif hasattr(value, 'nodes') and hasattr(value, 'relationships') and hasattr(value, 'start_node'):  # Path
             text_for_value_column = f"Path (length: {len(value.relationships)})"
-            nodes_item = QTreeWidgetItem(["nodes"])
-            for i, node_in_path in enumerate(value.nodes):
-                node_item = QTreeWidgetItem([f"[{i}]"])
+            nodes_item = QTreeWidgetItem(["nodes_in_path"])
+            for i_node, node_in_path in enumerate(value.nodes):
+                node_item = QTreeWidgetItem([f"[{i_node}]"])
                 self._add_neo4j_value_to_tree(node_in_path, node_item)
                 nodes_item.addChild(node_item)
             if nodes_item.childCount() > 0: children_to_add.append(nodes_item)
-            rels_item = QTreeWidgetItem(["relationships"])
-            for i, rel_in_path in enumerate(value.relationships):
-                rel_item = QTreeWidgetItem([f"[{i}]"])
+
+            rels_item = QTreeWidgetItem(["relationships_in_path"])
+            for i_rel, rel_in_path in enumerate(value.relationships):
+                rel_item = QTreeWidgetItem([f"[{i_rel}]"])
                 self._add_neo4j_value_to_tree(rel_in_path, rel_item)
                 rels_item.addChild(rel_item)
             if rels_item.childCount() > 0: children_to_add.append(rels_item)
-        elif isinstance(value, dict):
+
+        elif isinstance(value, dict):  # Map or properties
             text_for_value_column = "Map (Dictionary)"
             for k_dict, v_dict in value.items():
                 dict_child_item = QTreeWidgetItem([str(k_dict)])
                 self._add_neo4j_value_to_tree(v_dict, dict_child_item)
                 children_to_add.append(dict_child_item)
-        elif isinstance(value, list):
+
+        elif isinstance(value, list):  # List
             text_for_value_column = f"List [{len(value)} items]"
             for i_list, v_list_item in enumerate(value):
                 list_child_item = QTreeWidgetItem([f"[{i_list}]"])
                 self._add_neo4j_value_to_tree(v_list_item, list_child_item)
-                children_to_add.append(list_child_item)
-        else:
+                children_to_add.list_child_item
+        else:  # Scalar value
             text_for_value_column = str(value)
-        if is_direct_value:
+
+        # Set text for the parent_item's value column
+        if is_direct_value_for_item:  # If parent_item itself represents this value (e.g. single column result)
+            parent_item.setText(1, text_for_value_column)  # Set its second column
+        elif parent_item.text(1) == "":  # If parent_item is a key and its value column is empty
             parent_item.setText(1, text_for_value_column)
-        elif parent_item.text(1) == "":
-            parent_item.setText(1, text_for_value_column)
+
+        # Add any collected children (like properties, path components)
         if children_to_add:
             parent_item.addChildren(children_to_add)
             parent_item.setExpanded(True)
@@ -1177,7 +1276,7 @@ class CassandraTab(QWidget):
         selection_layout.addWidget(self.refresh_btn)
         main_layout.addWidget(selection_panel)
         self.data_tree = QTreeWidget()
-        self.data_tree.setColumnCount(1)
+        self.data_tree.setColumnCount(1)  # Default, will be adjusted
         self.data_tree.setHeaderLabels(["Row Data"])
         main_layout.addWidget(self.data_tree)
         self.row_count_label = QLabel("Rows: 0")
@@ -1206,7 +1305,7 @@ class CassandraTab(QWidget):
             self.connect_btn.setText("Reconnect")
             self.refresh_btn.setEnabled(True)
             self.keyspace_combo.setEnabled(True)
-            self.table_combo.setEnabled(True)
+            self.table_combo.setEnabled(True)  # Enable table combo as well
             self._load_keyspaces()
         except NoHostAvailable as e:
             self.connection_status.setText("Connection failed (NoHostAvailable)")
@@ -1238,7 +1337,7 @@ class CassandraTab(QWidget):
     def _load_keyspaces(self):
         if not self.cluster or not self.cluster.metadata: return
         self.keyspace_combo.clear();
-        self.table_combo.clear()
+        self.table_combo.clear()  # Clear tables when keyspaces reload
         try:
             keyspace_names = list(self.cluster.metadata.keyspaces.keys())
             system_keyspaces = {'system', 'system_auth', 'system_distributed', 'system_schema',
@@ -1249,7 +1348,7 @@ class CassandraTab(QWidget):
                                      ks not in system_keyspaces and not ks.startswith("dse_") and not ks.startswith(
                                          "solr_")])
             self.keyspace_combo.addItems(user_keyspaces)
-            self.keyspace_combo.setCurrentIndex(-1)
+            self.keyspace_combo.setCurrentIndex(-1)  # No selection initially
             self.keyspace_combo.setPlaceholderText("Select keyspace")
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load keyspaces:\n{str(e)}")
@@ -1267,9 +1366,9 @@ class CassandraTab(QWidget):
             if tables_metadata:
                 table_names = sorted(list(tables_metadata.tables.keys()))
                 self.table_combo.addItems(table_names)
-                self.table_combo.setCurrentIndex(-1)
+                self.table_combo.setCurrentIndex(-1)  # No selection
                 self.table_combo.setPlaceholderText("Select table")
-            else:
+            else:  # Should not happen if keyspace_name is valid
                 self.table_combo.setPlaceholderText("(No tables found)")
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load tables for '{keyspace_name}':\n{str(e)}")
@@ -1283,14 +1382,18 @@ class CassandraTab(QWidget):
             self.data_tree.setHeaderLabels(["Row Data"])
             return
         try:
+            # Set keyspace for the session for this operation, though queries can be fully qualified
             self.session.set_keyspace(self.current_keyspace)
+            # Use quoted identifiers for keyspace and table names
             query = f"SELECT * FROM \"{self.current_keyspace}\".\"{table_name}\" LIMIT 100"
-            statement = SimpleStatement(query, fetch_size=50)
+            statement = SimpleStatement(query, fetch_size=50)  # fetch_size helps with large results
             result_set = self.session.execute(statement)
-            rows = list(result_set)
+            rows = list(result_set)  # Get all rows from this page/query
+
             self.row_count_label.setText(f"Rows: {len(rows)} (limited to 100)")
+
             if rows:
-                column_names = rows[0]._fields
+                column_names = list(rows[0]._fields)  # Get column names from the first row
                 self.data_tree.setColumnCount(len(column_names))
                 self.data_tree.setHeaderLabels(column_names)
                 for row in rows:
@@ -1300,8 +1403,8 @@ class CassandraTab(QWidget):
             else:
                 self.data_tree.setColumnCount(1)
                 self.data_tree.setHeaderLabels([f"No data found in {table_name}"])
-        except InvalidRequest as e:
-            QMessageBox.warning(self, "Query Error", f"Invalid CQL for '{table_name}':\n{str(e)}")
+        except InvalidRequest as e:  # Specific error for bad CQL
+            QMessageBox.warning(self, "Query Error", f"Invalid CQL query for '{table_name}':\n{str(e)}")
             self.data_tree.setColumnCount(1);
             self.data_tree.setHeaderLabels(["Query Error"])
         except Exception as e:
@@ -1311,21 +1414,58 @@ class CassandraTab(QWidget):
 
     def _refresh_data(self):
         current_keyspace = self.keyspace_combo.currentText()
-        if self.cluster:
-            self._load_keyspaces()
+        current_table = self.table_combo.currentText()  # Save current table selection
+
+        if self.cluster:  # Only if connected
+            self._load_keyspaces()  # Reload keyspaces
             if current_keyspace:
                 keyspace_idx = self.keyspace_combo.findText(current_keyspace)
                 if keyspace_idx != -1:
-                    self.keyspace_combo.setCurrentIndex(keyspace_idx)
-                else:
+                    self.keyspace_combo.setCurrentIndex(keyspace_idx)  # Restore keyspace selection
+                    # _update_tables_combo will be triggered, which reloads tables
+                    # We need to restore table selection after tables are reloaded
+                    if current_table:
+                        # _update_tables_combo clears and reloads tables.
+                        # We might need a way to wait for it or chain table restoration.
+                        # For simplicity, if current_table was selected, user might need to reselect.
+                        # Or, _update_tables_combo could try to restore selection if passed.
+                        # Current behavior: table selection will be lost on refresh if keyspace is restored.
+                        # Let's explicitly call _load_table_data if table was selected.
+                        # This assumes _update_tables_combo finishes synchronously.
+                        table_idx = self.table_combo.findText(current_table)
+                        if table_idx != -1:
+                            self.table_combo.setCurrentIndex(table_idx)
+                            self._load_table_data(current_table)  # Manually reload data for the table
+                        else:  # Table no longer exists or not found
+                            self.data_tree.clear();
+                            self.row_count_label.setText("Rows: 0")
+
+                else:  # Keyspace no longer exists
                     self.keyspace_combo.setCurrentIndex(-1)
-                    self.table_combo.clear()
+                    self.table_combo.clear();
                     self.data_tree.clear()
                     self.row_count_label.setText("Rows: 0")
-            else:
-                self.table_combo.clear()
+            else:  # No keyspace was selected
+                self.table_combo.clear();
                 self.data_tree.clear()
                 self.row_count_label.setText("Rows: 0")
+
+
+class DatabaseViewerApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Database Data Viewer")
+        self.setGeometry(100, 100, 1000, 800)
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+        self.mongo_tab = MongoDBTab()
+        self.neo4j_tab = Neo4jTab()
+        self.cassandra_tab = CassandraTab()
+        self.search_tab = SearchTab()
+        self.tabs.addTab(self.mongo_tab, "MongoDB")
+        self.tabs.addTab(self.neo4j_tab, "Neo4j")
+        self.tabs.addTab(self.cassandra_tab, "Cassandra")
+        self.tabs.addTab(self.search_tab, "Wyszukaj")
 
 
 if __name__ == "__main__":
