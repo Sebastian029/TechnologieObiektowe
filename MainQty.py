@@ -50,159 +50,151 @@ class ClassDiagramEditor(QMainWindow):
         self.stacked_widget.addWidget(self.class_editor_widget)
 
     def _get_type_hint_str(self, type_str: str, is_optional: bool) -> str:
-        container_type = None
-        base_type = type_str
-        
-        for container in ["List[", "Dict[", "Tuple[", "frozenset["]:
-            if type_str.startswith(container) and type_str.endswith(']'):
-                container_type = container[:-1]
-                base_type = type_str[len(container):-1]
-                break
-
-        is_class_type = base_type in self.classes
-
-        if container_type:
-            base_hint = f"'{base_type}'" if is_class_type else base_type
-            container_hint = f"{container_type}[{base_hint}]"
-            if container_type == "Dict" and ":" not in base_type:
-                container_hint = f"Dict[str, {base_hint}]"
-            elif container_type == "Tuple":
-                if not base_type.endswith(", ..."):
-                    container_hint = f"Tuple[{base_hint}, ...]"
-            return f"Optional[{container_hint}]" if is_optional else container_hint
+        # Obsługa typów kontenerowych
+        if type_str.startswith("Dict["):
+            inner_types = type_str[5:-1].split(",")
+            if len(inner_types) == 2:
+                key_type, value_type = inner_types[0].strip(), inner_types[1].strip()
+                base_hint = f"{key_type}, {value_type}"
+            else:
+                # Domyślnie Dict[str, typ] jeśli podano tylko jeden typ
+                value_type = type_str[5:-1].strip()
+                base_hint = f"str, {value_type}"
+            container_hint = f"Dict[{base_hint}]"
+        elif type_str.startswith("List["):
+            base_type = type_str[5:-1]
+            container_hint = f"List[{base_type}]"
+        elif type_str.startswith("Tuple["):
+            base_type = type_str[6:-1]
+            container_hint = f"Tuple[{base_type}]"
+        elif type_str.startswith("FrozenSet["):
+            base_type = type_str[10:-1]
+            container_hint = f"FrozenSet[{base_type}]"
+        elif type_str.startswith("Set["):
+            base_type = type_str[4:-1]
+            container_hint = f"Set[{base_type}]"
         else:
-            base_hint = f"'{base_type}'" if is_class_type else base_type
-            return f"Optional[{base_hint}]" if is_optional else base_hint
+            # Typ prosty
+            is_class_type = type_str in self.classes
+            container_hint = f"'{type_str}'" if is_class_type else type_str
+
+        return f"Optional[{container_hint}]" if is_optional else container_hint
 
     def _generate_python_code(self) -> str:
         code_lines = []
         if not self.classes:
             return ""
-        imports = {"List", "Dict", "Tuple", "Set", "FrozenSet"}
 
+
+
+        imports = {'Set', 'List'}
         code_lines.append(f"from typing import {', '.join(sorted(imports))}")
         code_lines.append("\n")
 
-        sorted_classes = self._sort_classes_by_inheritance()
+        # Sortowanie klas - najpierw klasy bez zależności
+        sorted_classes = self._sort_classes_by_dependencies()
 
         for class_name in sorted_classes:
-            if class_name not in self.classes:
-                continue
-
             class_data = self.classes[class_name]
             parent_name = class_data.get('inherits')
-            compositions = class_data.get('compositions', [])
-            own_fields = class_data.get('fields', [])
 
+            # Dziedziczenie
             parent_str = f"({parent_name})" if parent_name else ""
             code_lines.append(f"\nclass {class_name}{parent_str}:")
 
-            all_fields_with_source = self._get_all_fields_recursive(
-                class_name)
+            # Pola klasy
+            fields = class_data.get('fields', [])
+            if not fields and not parent_name:
+                code_lines.append("    pass")
+                continue
 
-            required_init_params = []
-            optional_init_params = []
-            assigned_in_init = []
+            # Parametry __init__
+            init_params = ['self']
+            assignments = []
 
-            parent_all_fields = []
+            # Dodaj pola z klasy nadrzędnej (jeśli istnieje)
             if parent_name:
-                parent_all_fields_data = self._get_all_fields_recursive(parent_name)
-                parent_all_fields = [f['field'] for f in parent_all_fields_data]
-
-            processed_param_names = set()
-
-            if parent_name:
-                parent_compositions = self.classes[parent_name].get('compositions', [])
-                for field in parent_all_fields:
-                    if not self._is_composition_field(field['name'], field['type'], parent_compositions):
-                        type_hint = self._get_type_hint_str(field['type'], False)
-                        required_init_params.append(f"{field['name']}: {type_hint}")
-                        processed_param_names.add(field['name'])
-
-            for field_info in all_fields_with_source:
-                field = field_info['field']
-                source = field_info['source']
-                is_own = (source == class_name)
-                is_comp = self._is_composition_field(field['name'], field['type'], compositions)
-
-                if not is_comp and field['name'] not in processed_param_names:
+                parent_fields = self._get_parent_fields(class_name)
+                for field in parent_fields:
                     type_hint = self._get_type_hint_str(field['type'], False)
-                    required_init_params.append(f"{field['name']}: {type_hint}")
-                    processed_param_names.add(field['name'])
-                if is_own:
-                    assigned_in_init.append(field)
+                    init_params.append(f"{field['name']}: {type_hint}")
+                    assignments.append(f"        self.{field['name']} = {field['name']}")
 
-            if parent_name:
-                parent_compositions = self.classes[parent_name].get('compositions', [])
-                for field in parent_all_fields:
-                    if self._is_composition_field(field['name'], field['type'], parent_compositions):
-                        type_hint = self._get_type_hint_str(field['type'], True)
-                        optional_init_params.append(f"{field['name']}: {type_hint} = None")
-                        processed_param_names.add(field['name'])
+            # Dodaj własne pola klasy
+            for field in fields:
+                type_hint = self._get_type_hint_str(field['type'], False)
+                init_params.append(f"{field['name']}: {type_hint}")
+                assignments.append(f"        self.{field['name']}: {type_hint} = {field['name']}")
 
-            for field_info in all_fields_with_source:
-                field = field_info['field']
-                source = field_info['source']
-                is_own = (source == class_name)
-                is_comp = self._is_composition_field(field['name'], field['type'], compositions)
-
-                if is_comp and field['name'] not in processed_param_names:
-                    type_hint = self._get_type_hint_str(field['type'], True)
-                    optional_init_params.append(f"{field['name']}: {type_hint} = None")
-                    processed_param_names.add(field['name'])
-                if is_own and is_comp and field not in assigned_in_init:
-                    assigned_in_init.append(field)
-
-            if not required_init_params and not optional_init_params and not parent_name:
-                if not own_fields:
-                    code_lines.append("    pass")
-                    continue
-
-            init_params = ['self'] + required_init_params + optional_init_params
+            # Generuj metodę __init__
             code_lines.append(f"    def __init__({', '.join(init_params)}):")
-
             if parent_name:
-                super_args = []
-                parent_params_names = {f['name'] for f in parent_all_fields}
+                parent_params = [f['name'] for f in parent_fields]
+                if parent_params:
+                    code_lines.append(f"        super().__init__({', '.join(parent_params)})")
+                else:
+                    code_lines.append("        super().__init__()")
 
-                parent_compositions = self.classes[parent_name].get('compositions', [])
-                for field in parent_all_fields:
-                    if not self._is_composition_field(field['name'], field['type'], parent_compositions):
-                        if field['name'] in processed_param_names:
-                            super_args.append(field['name'])
-                for field in parent_all_fields:
-                    if self._is_composition_field(field['name'], field['type'], parent_compositions):
-                        if field['name'] in processed_param_names:
-                            super_args.append(field['name'])
-
-                if super_args:
-                    code_lines.append(f"        super().__init__({', '.join(super_args)})")
-                elif parent_all_fields:
-                    code_lines.append(f"        super().__init__()")
-
-            if not assigned_in_init and not parent_name and not required_init_params and not optional_init_params:
-                code_lines.append("        pass")
+            if assignments:
+                code_lines.extend(assignments)
             else:
-                init_body_empty = True
-                for field in sorted(assigned_in_init, key=lambda x: x['name']):
-                    init_body_empty = False
-                    is_comp = self._is_composition_field(field['name'], field['type'], compositions)
-                    is_list_type = field['type'].startswith("List[")
-
-                    if is_comp and is_list_type:
-                        code_lines.append(
-                            f"        self.{field['name']}: {self._get_type_hint_str(field['type'], True)} = {field['name']} if {field['name']} is not None else []")
-                    elif is_comp and not is_list_type:
-                        code_lines.append(
-                            f"        self.{field['name']}: {self._get_type_hint_str(field['type'], True)} = {field['name']}")
-                    elif not is_comp:
-                        code_lines.append(
-                            f"        self.{field['name']}: {self._get_type_hint_str(field['type'], False)} = {field['name']}")
-
-                if init_body_empty and not parent_name:
-                    code_lines.append("        pass")
+                code_lines.append("        pass")
 
         return "\n".join(code_lines)
+
+    def _sort_classes_by_dependencies(self) -> List[str]:
+        # Utwórz graf zależności
+        graph = {class_name: set() for class_name in self.classes}
+
+        for class_name, class_data in self.classes.items():
+            # Zależności z dziedziczenia
+            if parent := class_data.get('inherits'):
+                if parent in self.classes:
+                    graph[class_name].add(parent)
+
+            # Zależności z pól
+            for field in class_data.get('fields', []):
+                field_type = field['type']
+                # Wyodrębnij typy z kontenerów
+                if field_type.startswith('List['):
+                    inner_type = field_type[5:-1]
+                    if inner_type in self.classes:
+                        graph[class_name].add(inner_type)
+                elif field_type.startswith('Set['):
+                    inner_type = field_type[4:-1]
+                    if inner_type in self.classes:
+                        graph[class_name].add(inner_type)
+                elif field_type.startswith('Dict['):
+                    # Dla słownika bierzemy pod uwagę tylko typ wartości
+                    parts = field_type[5:-1].split(',')
+                    if len(parts) == 2 and parts[1].strip() in self.classes:
+                        graph[class_name].add(parts[1].strip())
+                elif field_type in self.classes:
+                    graph[class_name].add(field_type)
+
+        # Sortowanie topologiczne
+        visited = set()
+        result = []
+
+        def visit(node):
+            if node not in visited:
+                visited.add(node)
+                for neighbor in graph[node]:
+                    visit(neighbor)
+                result.append(node)
+
+        for class_name in sorted(self.classes.keys()):
+            visit(class_name)
+
+        return result
+
+    def _get_parent_fields(self, class_name: str) -> List[Dict[str, str]]:
+        # Zwraca pola z klasy nadrzędnej
+        parent_name = self.classes[class_name].get('inherits')
+        if not parent_name or parent_name not in self.classes:
+            return []
+
+        return self.classes[parent_name].get('fields', [])
 
     def _sort_classes_by_inheritance(self) -> List[str]:
         class_order = []
@@ -343,7 +335,7 @@ class ClassDiagramEditor(QMainWindow):
         self.editor_container_combo.addItem("Lista (List[typ])", "List")
         self.editor_container_combo.addItem("Słownik (Dict[klucz,wartość])", "Dict")
         self.editor_container_combo.addItem("Krotka (Tuple[typ, ...])", "Tuple")
-        self.editor_container_combo.addItem("FrozenSet (Frozenset[typ])", "Frozenset")
+        self.editor_container_combo.addItem("FrozenSet (FrozenSet[typ])", "FrozenSet")
         self.editor_container_combo.addItem("Set (Set[typ])", "Set")
 
         type_layout = QHBoxLayout()

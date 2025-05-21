@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QTextEdit, QPushButton, QMessageBox)
 from MongoDB.main import PyMongoConverter  
 from Neo4j.main import Neo4jConverter  
-# from Cassandra.main import PyCassandraConverter
+from Cassandra.main import PyCassandraConverter
 
 class UniversalConverterApp(QWidget):
     def __init__(self):
@@ -12,7 +12,7 @@ class UniversalConverterApp(QWidget):
         
         self.mongo_converter = PyMongoConverter()
         self.neo4j_converter = Neo4jConverter()
-        # self.cassandra_converter = PyCassandraConverter()
+        self.cassandra_converter = PyCassandraConverter()
     
     def init_ui(self):
         self.setWindowTitle("Database Converter")
@@ -40,9 +40,9 @@ class UniversalConverterApp(QWidget):
         self.neo4j_button.clicked.connect(self.save_to_neo4j)
         button_layout.addWidget(self.neo4j_button)
 
-        # self.cassandra_button = QPushButton("Save to Cassandra")
-        # self.cassandra_button.clicked.connect(self.save_to_casandra)
-        # button_layout.addWidget(self.cassandra_button)
+        self.cassandra_button = QPushButton("Save to Cassandra")
+        self.cassandra_button.clicked.connect(self.save_to_casandra)
+        button_layout.addWidget(self.cassandra_button)
         
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self.clear_inputs)
@@ -101,15 +101,15 @@ class UniversalConverterApp(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Neo4j save failed:\n{str(e)}")
 
-    # def save_to_casandra(self):
-    #     objects = self.get_objects()
-    #     if objects:
-    #         try:
-    #             for obj in objects:
-    #                 self.neo4j_converter._save_object(obj)
-    #             QMessageBox.information(self, "Success", f"Saved {len(objects)} objects to Cassandra!")
-    #         except Exception as e:
-    #             QMessageBox.critical(self, "Error", f"Cassandra save failed:\n{str(e)}")
+    def save_to_casandra(self):
+        objects = self.get_objects()
+        if objects:
+            try:
+                for obj in objects:
+                    self.cassandra_converter.save_to_cassandra(obj)
+                QMessageBox.information(self, "Success", f"Saved {len(objects)} objects to Cassandra!")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Cassandra save failed:\n{str(e)}")
     
     def clear_inputs(self):
         self.class_code_edit.clear()
@@ -119,7 +119,7 @@ class UniversalConverterApp(QWidget):
     def closeEvent(self, event):
         self.mongo_converter.close()
         self.neo4j_converter.close()
-        # self.cassandra_converter.close()
+        self.cassandra_converter.close()
         event.accept()
 
 if __name__ == "__main__":

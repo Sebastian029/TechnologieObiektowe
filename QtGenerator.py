@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QCheckBox, QDialog, QDialogButtonBox, QListWidget,
     QListWidgetItem, QStackedWidget
 )
-from PyQt6.QtCore import  pyqtSignal, QLocale
+from PyQt6.QtCore import pyqtSignal, QLocale, Qt
 from PyQt6.QtGui import QDoubleValidator
 from typing import Dict, List, Optional, Any, Tuple
 import random
@@ -306,7 +306,6 @@ class ConnectObjectsDialog(QDialog):
                 selected_items = self.source_objects_list_widget.selectedItems()
                 # Filter out any non-selectable placeholder items
                 source_data = [item.text() for item in selected_items if item.flags() & Qt.ItemFlag.ItemIsSelectable]
-                # If source_data is empty list, it means either nothing selected or only placeholder was there
             else: return None # Should not happen
         else: # Single object
             if self.source_stacked_widget.currentWidget() == self.source_object_combo:
@@ -667,11 +666,20 @@ class ObjectGeneratorApp(QMainWindow):
                 elif field_type == "List[str]":
                     field_widget.setText(str([''.join(random.choices(string.ascii_letters, k=5)) for _ in range(3)]))
                 elif field_type == "Dict[str, str]":
-                    field_widget.setText(str({f"key_{i}": ''.join(random.choices(string.ascii_letters, k=5)) for i in range(2)}))
+                    field_widget.setText(
+                        str({f"key_{i}": ''.join(random.choices(string.ascii_letters, k=5)) for i in range(2)}))
                 elif field_type == "Dict[str, int]":
                     field_widget.setText(str({f"key_{i}": random.randint(1, 100) for i in range(2)}))
                 elif field_type == "Dict[str, float]":
                     field_widget.setText(str({f"key_{i}": round(random.uniform(1, 100), 2) for i in range(2)}))
+                elif field_type == "Dict[str, Klasa]":
+                    # Znajdź istniejące obiekty klasy Klasa
+                    klasa_objects = [name for name, obj in self.objects.items()
+                                     if obj.__class__.__name__ == "Klasa"]
+                    if klasa_objects:
+                        field_widget.setText(str({f"key_{i}": random.choice(klasa_objects) for i in range(2)}))
+                    else:
+                        field_widget.setText("{}")  # Pusty słownik jeśli brak obiektów
                 elif field_type in ["Set[int]", "FrozenSet[int]"]:
                     field_widget.setText(str({random.randint(1, 100) for _ in range(3)}))
                 elif field_type in ["Set[float]", "FrozenSet[float]"]:
@@ -695,56 +703,87 @@ class ObjectGeneratorApp(QMainWindow):
                     field_widget.setCurrentIndex(0)
 
     def _create_predefined_objects(self):
-        """Creates predefined objects for all available classes using their fields."""
+        """Creates predefined objects for all available classes."""
         created_objects = []
-        
+
         for class_name, class_info in self.classes.items():
-            # Skip if class already has instances (to avoid duplicates)
-            existing_instances = [name for name, obj in self.objects.items() 
-                                if obj.__class__.__name__ == class_name]
-            if existing_instances:
-                continue
-                
-            try:
-                # Create 1-2 instances per class
-                for i in range(1, 3):
-                    obj_name = f"{class_name.lower()}{i}"
-                    if obj_name in self.objects:
-                        continue  # Skip if name exists
-                        
-                    # Prepare constructor args based on fields
-                    constructor_args = {}
-                    fields_info = self._get_all_fields_recursive(class_name)
-                    
-                    for field_info in fields_info:
-                        field = field_info['field']
-                        field_name = field['name']
-                        field_type = field['type']
-                        
-                        # Generate appropriate random value based on type
-                        if 'int' in field_type:
-                            constructor_args[field_name] = random.randint(1, 100)
-                        elif 'float' in field_type:
-                            constructor_args[field_name] = round(random.uniform(1, 100), 2)
-                        elif 'bool' in field_type:
-                            constructor_args[field_name] = random.choice([True, False])
-                        elif 'str' in field_type:
-                            constructor_args[field_name] = ''.join(random.choices(string.ascii_letters, k=10))
-                        elif any(t in field_type for t in ['List', 'list', 'Dict', 'dict']):
-                            # Simple collections
-                            if 'List' in field_type or 'list' in field_type:
-                                constructor_args[field_name] = [random.randint(1, 10), random.choice(['a', 'b', 'c'])]
-                            else:  # Dict
-                                constructor_args[field_name] = {'key': random.randint(1, 10)}
-                        elif field_type in self.classes:
-                            # Composition - try to find existing object of this type
-                            compatible_objects = [name for name, obj in self.objects.items() 
-                                                if obj.__class__.__name__ == field_type]
+            # Create 1-2 instances per class
+            for i in range(1, 3):
+                obj_name = f"{class_name.lower()}_{i}"
+                if obj_name in self.objects:
+                    continue  # Skip if name exists
+
+                # Prepare constructor args
+                constructor_args = {}
+                fields_info = self._get_all_fields_recursive(class_name)
+
+                for field_info in fields_info:
+                    field = field_info['field']
+                    field_name = field['name']
+                    field_type = field['type']
+
+                    # Generate appropriate value based on type
+                    if field_type == "int":
+                        constructor_args[field_name] = random.randint(1, 100)
+                    elif field_type == "float":
+                        constructor_args[field_name] = round(random.uniform(1, 100), 2)
+                    elif field_type == "bool":
+                        constructor_args[field_name] = random.choice([True, False])
+                    elif field_type == "str":
+                        constructor_args[field_name] = ''.join(random.choices(string.ascii_letters, k=10))
+                    elif field_type.startswith("List["):
+                        element_type = field_type[5:-1]
+                        if element_type == "int":
+                            constructor_args[field_name] = [random.randint(1, 100) for _ in range(3)]
+                        elif element_type == "float":
+                            constructor_args[field_name] = [round(random.uniform(1, 100), 2) for _ in range(3)]
+                        elif element_type == "str":
+                            constructor_args[field_name] = [''.join(random.choices(string.ascii_letters, k=5)) for _ in
+                                                            range(3)]
+                        else:  # List of objects
+                            compatible_objects = [obj for name, obj in self.objects.items()
+                                                  if obj.__class__.__name__ == element_type]
                             if compatible_objects:
-                                constructor_args[field_name] = self.objects[random.choice(compatible_objects)]
-                            # Else leave unset (will use default if available)
-                    
-                    # Create the object
+                                constructor_args[field_name] = random.sample(compatible_objects,
+                                                                             min(3, len(compatible_objects)))
+                            else:
+                                constructor_args[field_name] = []
+                    elif field_type.startswith("Dict["):
+                        key_type, value_type = field_type[5:-1].split(",")
+                        key_type = key_type.strip()
+                        value_type = value_type.strip()
+
+                        if value_type in self.classes:  # Dict[str, Klasa]
+                            compatible_objects = [name for name, obj in self.objects.items()
+                                                  if obj.__class__.__name__ == value_type]
+                            if compatible_objects:
+                                constructor_args[field_name] = {
+                                    f"key_{i}": random.choice(compatible_objects)
+                                    for i in range(2)
+                                }
+                            else:
+                                constructor_args[field_name] = {}
+                        else:  # Dict[str, primitive]
+                            if value_type == "int":
+                                constructor_args[field_name] = {f"key_{i}": random.randint(1, 100) for i in range(2)}
+                            elif value_type == "float":
+                                constructor_args[field_name] = {f"key_{i}": round(random.uniform(1, 100), 2) for i in
+                                                                range(2)}
+                            elif value_type == "str":
+                                constructor_args[field_name] = {
+                                    f"key_{i}": ''.join(random.choices(string.ascii_letters, k=5)) for i in range(2)}
+                            else:
+                                constructor_args[field_name] = {}
+                    elif field_type in self.classes:  # Single object reference
+                        compatible_objects = [obj for name, obj in self.objects.items()
+                                              if obj.__class__.__name__ == field_type]
+                        if compatible_objects:
+                            constructor_args[field_name] = random.choice(compatible_objects)
+                    else:
+                        constructor_args[field_name] = "default_value"
+
+                # Create the object
+                try:
                     obj = class_info['class_obj'](**constructor_args)
                     self.objects[obj_name] = obj
                     self.object_data[obj_name] = {
@@ -752,22 +791,15 @@ class ObjectGeneratorApp(QMainWindow):
                         'attributes': constructor_args
                     }
                     created_objects.append(obj_name)
-                    
-            except Exception as e:
-                print(f"Error creating predefined {class_name}: {e}")
-                continue
-        
+                except Exception as e:
+                    print(f"Error creating {obj_name}: {e}")
+
         if created_objects:
-            self.objects_changed.emit()  # Dodaj tę linię, aby odświeżyć interfejs
-            QMessageBox.information(
-                self, "Sukces", 
-                f"Utworzono przykładowe obiekty: {', '.join(created_objects)}"
-            )
+            self.objects_changed.emit()
+            QMessageBox.information(self, "Sukces", f"Utworzono przykładowe obiekty: {', '.join(created_objects)}")
         else:
-            QMessageBox.information(
-                self, "Informacja", 
-                "Nie utworzono nowych przykładowych obiektów (wszystkie klasy mają już instancje)."
-            )
+            QMessageBox.information(self, "Informacja",
+                                    "Nie utworzono nowych obiektów (wszystkie klasy mają już instancje).")
 
     def _create_or_update_object(self):
         """Creates a new object or updates an existing one based on form data."""
