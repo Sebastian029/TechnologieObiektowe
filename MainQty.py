@@ -85,11 +85,25 @@ class ClassDiagramEditor(QMainWindow):
         if not self.classes:
             return ""
 
+        # Zbieranie potrzebnych importów
+        imports = set()
+        for class_data in self.classes.values():
+            for field in class_data.get('fields', []):
+                field_type = field['type']
+                if field_type.startswith('List['):
+                    imports.add('List')
+                elif field_type.startswith('Dict['):
+                    imports.add('Dict')
+                elif field_type.startswith('Tuple['):
+                    imports.add('Tuple')
+                elif field_type.startswith('Set['):
+                    imports.add('Set')
+                elif field_type.startswith('FrozenSet['):
+                    imports.add('FrozenSet')
 
-
-        imports = {'Set', 'List'}
-        code_lines.append(f"from typing import {', '.join(sorted(imports))}")
-        code_lines.append("\n")
+        if imports:
+            code_lines.append(f"from typing import {', '.join(sorted(imports))}")
+            code_lines.append("\n")
 
         # Sortowanie klas - najpierw klasy bez zależności
         sorted_classes = self._sort_classes_by_dependencies()
@@ -97,6 +111,7 @@ class ClassDiagramEditor(QMainWindow):
         for class_name in sorted_classes:
             class_data = self.classes[class_name]
             parent_name = class_data.get('inherits')
+            compositions = class_data.get('compositions', [])
 
             # Dziedziczenie
             parent_str = f"({parent_name})" if parent_name else ""
@@ -104,32 +119,53 @@ class ClassDiagramEditor(QMainWindow):
 
             # Pola klasy
             fields = class_data.get('fields', [])
-            if not fields and not parent_name:
-                code_lines.append("    pass")
-                continue
 
-            # Parametry __init__
+            # Parametry __init__ - tylko dla pól nie-kompozycyjnych i parametrów kompozycji
             init_params = ['self']
             assignments = []
+            composition_assignments = []
 
             # Dodaj pola z klasy nadrzędnej (jeśli istnieje)
             if parent_name:
                 parent_fields = self._get_parent_fields(class_name)
                 for field in parent_fields:
+                    if not self._is_composition_field_type(field['type'], compositions):
+                        type_hint = self._get_type_hint_str(field['type'], False)
+                        init_params.append(f"{field['name']}: {type_hint}")
+                        assignments.append(f"        self.{field['name']} = {field['name']}")
+
+            # Dodaj własne pola klasy (nie-kompozycyjne)
+            for field in fields:
+                if self._is_composition_field_type(field['type'], compositions):
+                    # Dla kompozycji - dodaj parametry potrzebne do utworzenia obiektu
+                    field_type = self._extract_base_type(field['type'])
+                    if field_type in self.classes:
+                        # Znajdź parametry konstruktora klasy kompozycji
+                        composition_class_data = self.classes[field_type]
+                        composition_fields = composition_class_data.get('fields', [])
+                        composition_compositions = composition_class_data.get('compositions', [])
+
+                        # Dodaj parametry tylko dla pól nie-kompozycyjnych klasy kompozycji
+                        for comp_field in composition_fields:
+                            if not self._is_composition_field_type(comp_field['type'], composition_compositions):
+                                param_name = f"{field['name']}_{comp_field['name']}"
+                                type_hint = self._get_type_hint_str(comp_field['type'], False)
+                                init_params.append(f"{param_name}: {type_hint}")
+                else:
                     type_hint = self._get_type_hint_str(field['type'], False)
                     init_params.append(f"{field['name']}: {type_hint}")
-                    assignments.append(f"        self.{field['name']} = {field['name']}")
-
-            # Dodaj własne pola klasy
-            for field in fields:
-                type_hint = self._get_type_hint_str(field['type'], False)
-                init_params.append(f"{field['name']}: {type_hint}")
-                assignments.append(f"        self.{field['name']}: {type_hint} = {field['name']}")
+                    assignments.append(f"        self.{field['name']}: {type_hint} = {field['name']}")
 
             # Generuj metodę __init__
+            if not init_params[1:] and not fields and not parent_name:
+                code_lines.append("    pass")
+                continue
+
             code_lines.append(f"    def __init__({', '.join(init_params)}):")
+
             if parent_name:
-                parent_params = [f['name'] for f in parent_fields]
+                parent_params = [f['name'] for f in parent_fields
+                                 if not self._is_composition_field_type(f['type'], compositions)]
                 if parent_params:
                     code_lines.append(f"        super().__init__({', '.join(parent_params)})")
                 else:
@@ -137,10 +173,96 @@ class ClassDiagramEditor(QMainWindow):
 
             if assignments:
                 code_lines.extend(assignments)
-            else:
+
+            # Dodaj tworzenie obiektów kompozycji
+            for field in fields:
+                if self._is_composition_field_type(field['type'], compositions):
+                    field_type = self._extract_base_type(field['type'])
+                    if field['type'].startswith('List['):
+                        # Lista obiektów kompozycji - tworzymy pustą listę
+                        composition_assignments.append(f"        self.{field['name']}: List[{field_type}] = []")
+                    else:
+                        # Pojedynczy obiekt kompozycji - tworzymy instancję z parametrami
+                        if field_type in self.classes:
+                            composition_class_data = self.classes[field_type]
+                            composition_fields = composition_class_data.get('fields', [])
+                            composition_compositions = composition_class_data.get('compositions', [])
+
+                            # Parametry dla konstruktora kompozycji
+                            comp_params = []
+                            for comp_field in composition_fields:
+                                if not self._is_composition_field_type(comp_field['type'], composition_compositions):
+                                    param_name = f"{field['name']}_{comp_field['name']}"
+                                    comp_params.append(param_name)
+
+                            params_str = ', '.join(comp_params) if comp_params else ""
+                            composition_assignments.append(
+                                f"        self.{field['name']}: {field_type} = {field_type}({params_str})")
+                        else:
+                            composition_assignments.append(
+                                f"        self.{field['name']}: {field_type} = {field_type}()")
+
+            if composition_assignments:
+                code_lines.extend(composition_assignments)
+
+            if not assignments and not composition_assignments:
                 code_lines.append("        pass")
 
+            # Dodaj metody pomocnicze dla kompozycji list
+            for field in fields:
+                if self._is_composition_field_type(field['type'], compositions):
+                    field_type = self._extract_base_type(field['type'])
+                    if field['type'].startswith('List['):
+                        # Metoda do dodawania elementów do listy kompozycji
+                        method_name = f"add_{field['name'][:-1] if field['name'].endswith('s') else field['name']}"
+
+                        if field_type in self.classes:
+                            composition_class_data = self.classes[field_type]
+                            composition_fields = composition_class_data.get('fields', [])
+                            composition_compositions = composition_class_data.get('compositions', [])
+
+                            # Parametry dla metody dodawania
+                            method_params = ['self']
+                            comp_params = []
+                            for comp_field in composition_fields:
+                                if not self._is_composition_field_type(comp_field['type'], composition_compositions):
+                                    type_hint = self._get_type_hint_str(comp_field['type'], False)
+                                    method_params.append(f"{comp_field['name']}: {type_hint}")
+                                    comp_params.append(comp_field['name'])
+
+                            params_str = ', '.join(comp_params) if comp_params else ""
+                            code_lines.append(f"\n    def {method_name}({', '.join(method_params)}) -> {field_type}:")
+                            code_lines.append(f"        new_item = {field_type}({params_str})")
+                            code_lines.append(f"        self.{field['name']}.append(new_item)")
+                            code_lines.append(f"        return new_item")
+                        else:
+                            code_lines.append(f"\n    def {method_name}(self) -> {field_type}:")
+                            code_lines.append(f"        new_item = {field_type}()")
+                            code_lines.append(f"        self.{field['name']}.append(new_item)")
+                            code_lines.append(f"        return new_item")
+
         return "\n".join(code_lines)
+
+    def _is_composition_field_type(self, field_type: str, compositions: List[str]) -> bool:
+        """Sprawdza czy pole reprezentuje kompozycję"""
+        base_type = self._extract_base_type(field_type)
+        return base_type in compositions
+
+    def _extract_base_type(self, field_type: str) -> str:
+        """Wyodrębnia bazowy typ z typu kontenerowego"""
+        if field_type.startswith('List['):
+            return field_type[5:-1]
+        elif field_type.startswith('Dict['):
+            parts = field_type[5:-1].split(',')
+            return parts[1].strip() if len(parts) == 2 else field_type
+        elif field_type.startswith('Set['):
+            return field_type[4:-1]
+        elif field_type.startswith('FrozenSet['):
+            return field_type[10:-1]
+        elif field_type.startswith('Tuple['):
+            return field_type[6:-1].split(',')[0].strip()
+        else:
+            return field_type
 
     def _sort_classes_by_dependencies(self) -> List[str]:
         # Utwórz graf zależności
@@ -217,10 +339,11 @@ class ClassDiagramEditor(QMainWindow):
             if cls_name not in class_order:
                 class_order.append(cls_name)
 
-        sorted_keys = sorted(list(remaining_classes))
-        for cls in sorted_keys:
-            if cls not in class_order:
-                add_class_to_order(cls)
+        while remaining_classes:
+            sorted_keys = sorted(list(remaining_classes))
+            for cls in sorted_keys:
+                if cls not in class_order:
+                    add_class_to_order(cls)
 
         if len(class_order) != len(self.classes):
             print("Warning: Some classes might be missing from sorted order (e.g., invalid parent reference)")
@@ -338,6 +461,9 @@ class ClassDiagramEditor(QMainWindow):
         self.editor_container_combo.addItem("FrozenSet (FrozenSet[typ])", "FrozenSet")
         self.editor_container_combo.addItem("Set (Set[typ])", "Set")
 
+        # Dodaj checkbox dla kompozycji
+        self.editor_composition_checkbox = QCheckBox("Kompozycja (obiekt tworzony wewnątrz)")
+
         type_layout = QHBoxLayout()
         type_layout.addWidget(self.editor_field_type_combo, 1)
         type_layout.addWidget(self.editor_container_combo)
@@ -350,6 +476,7 @@ class ClassDiagramEditor(QMainWindow):
         layout.addWidget(self.editor_field_name_input)
         layout.addWidget(QLabel("Typ pola:"))
         layout.addLayout(type_layout)
+        layout.addWidget(self.editor_composition_checkbox)  # Dodaj checkbox
         layout.addWidget(self.editor_add_field_btn)
         layout.addWidget(QLabel("Pola w klasie (własne i dziedziczone):"))
         layout.addWidget(self.editor_fields_list)
@@ -388,14 +515,12 @@ class ClassDiagramEditor(QMainWindow):
         layout.addWidget(QLabel("<b>Zarządzanie relacjami (dla wybranej klasy):</b>"))
 
         self.editor_relation_type_combo = QComboBox()
-        self.editor_relation_type_combo.addItems(["Dziedziczenie", "Kompozycja"])
-        self.editor_relation_type_combo.currentTextChanged.connect(
-            self._update_relation_delete_button_text)
+        self.editor_relation_type_combo.addItems(["Dziedziczenie"])
 
         self.editor_relation_target_combo = QComboBox()
 
         self.editor_add_relation_btn = QPushButton("Dodaj relację")
-        self.editor_delete_relation_btn = QPushButton("Usuń relację")
+        self.editor_delete_relation_btn = QPushButton("Usuń dziedziczenie")
 
         layout.addWidget(QLabel("Typ relacji:"))
         layout.addWidget(self.editor_relation_type_combo)
@@ -410,14 +535,6 @@ class ClassDiagramEditor(QMainWindow):
         panel.setEnabled(False)
 
         return panel
-
-    def _update_relation_delete_button_text(self, relation_type):
-        if relation_type == "Dziedziczenie":
-            self.editor_delete_relation_btn.setText("Usuń dziedziczenie")
-        elif relation_type == "Kompozycja":
-            self.editor_delete_relation_btn.setText("Usuń kompozycję z wybranej klasy")
-        else:
-            self.editor_delete_relation_btn.setText("Usuń relację")
 
     def add_class(self):
         class_name = self.editor_class_name_input.text().strip()
@@ -441,7 +558,7 @@ class ClassDiagramEditor(QMainWindow):
             'fields': [],
             'methods': [],
             'inherits': None,
-            'compositions': []
+            'compositions': []  # Dodaj listę kompozycji
         }
         self.editor_class_name_input.clear()
         self.editor_class_name_input.setStyleSheet("")
@@ -467,14 +584,11 @@ class ClassDiagramEditor(QMainWindow):
         class_to_delete = current_selection.text()
 
         dependent_classes = []
-        dependent_objects = []
 
         for cls_name, cls_data in self.classes.items():
             if cls_name == class_to_delete: continue
             if cls_data.get('inherits') == class_to_delete:
                 dependent_classes.append(f"- '{cls_name}' (dziedziczy)")
-            if class_to_delete in cls_data.get('compositions', []):
-                dependent_classes.append(f"- '{cls_name}' (kompozycja)")
             for field in cls_data.get('fields', []):
                 base_type = field['type'][5:-1] if field['type'].startswith("List[") else field['type']
                 if base_type == class_to_delete:
@@ -505,7 +619,6 @@ class ClassDiagramEditor(QMainWindow):
         for cls_name, cls_data in self.classes.items():
             if cls_data.get('inherits') == class_to_delete:
                 cls_data['inherits'] = None
-            cls_data['compositions'] = [c for c in cls_data.get('compositions', []) if c != class_to_delete]
             new_fields = []
             for field in cls_data.get('fields', []):
                 base_type = field['type'][5:-1] if field['type'].startswith("List[") else field['type']
@@ -533,7 +646,6 @@ class ClassDiagramEditor(QMainWindow):
         self._enable_editor_panels(True)
         self._update_editor_fields_list()
         self._update_editor_relation_targets()
-        self._update_relation_delete_button_text(self.editor_relation_type_combo.currentText())
 
     def _enable_editor_panels(self, enabled: bool):
         if hasattr(self, 'fields_management_panel'):
@@ -563,13 +675,14 @@ class ClassDiagramEditor(QMainWindow):
             return
 
         if base_field_type == self.selected_class_editor:
-            QMessageBox.warning(self, "Błąd", 
-                            f"Nie można dodać pola typu '{base_field_type}' w klasie '{self.selected_class_editor}'.\n"
-                            "Klasa nie może zawierać pola tego samego typu co ona sama.")
+            QMessageBox.warning(self, "Błąd",
+                                f"Nie można dodać pola typu '{base_field_type}' w klasie '{self.selected_class_editor}'.\n"
+                                "Klasa nie może zawierać pola tego samego typu co ona sama.")
             return
 
         container_type = self.editor_container_combo.currentData()
-        
+        is_composition = self.editor_composition_checkbox.isChecked()
+
         if container_type == "List":
             final_field_type = f"List[{base_field_type}]"
         elif container_type == "Dict":
@@ -589,7 +702,8 @@ class ClassDiagramEditor(QMainWindow):
             conflict_source = "klasie nadrzędnej"
             for fdata in all_fields_data:
                 if fdata['field']['name'] == field_name:
-                    conflict_source = f"tej klasie ('{fdata['source']}')" if fdata['source'] == self.selected_class_editor else f"klasie '{fdata['source']}'"
+                    conflict_source = f"tej klasie ('{fdata['source']}')" if fdata[
+                                                                                 'source'] == self.selected_class_editor else f"klasie '{fdata['source']}'"
                     break
             QMessageBox.warning(self, "Błąd", f"Pole o nazwie '{field_name}' już istnieje w {conflict_source}.")
             return
@@ -599,14 +713,22 @@ class ClassDiagramEditor(QMainWindow):
             'type': final_field_type
         })
 
+        # Dodaj do listy kompozycji jeśli zaznaczono
+        if is_composition and base_field_type in self.classes:
+            compositions = self.classes[self.selected_class_editor].get('compositions', [])
+            if base_field_type not in compositions:
+                compositions.append(base_field_type)
+                self.classes[self.selected_class_editor]['compositions'] = compositions
+
         self.editor_field_name_input.clear()
         self.editor_field_name_input.setStyleSheet("")
+        self.editor_composition_checkbox.setChecked(False)
         self._update_editor_fields_list()
         self.update_class_tree()
         self.classes_changed.emit()
 
     def delete_field(self):
-        if not self.selected_class_editor: 
+        if not self.selected_class_editor:
             return
 
         selected_items = self.editor_fields_list.selectedItems()
@@ -625,51 +747,19 @@ class ClassDiagramEditor(QMainWindow):
             if "(z " in item_text:
                 source_class = f"klasie '{item_text.split('(z ')[1].split(')')[0]}'"
             QMessageBox.warning(self, "Błąd",
-                            f"Nie można usunąć pola '{field_name}', ponieważ jest dziedziczone z {source_class}. Usuń je w klasie bazowej.")
+                                f"Nie można usunąć pola '{field_name}', ponieważ jest dziedziczone z {source_class}. Usuń je w klasie bazowej.")
             return
 
-        field_data = None
         class_data = self.classes[self.selected_class_editor]
-        
+
         if 'fields' not in class_data:
             class_data['fields'] = []
-        
-        for f in class_data['fields']:
-            if f['name'] == field_name:
-                field_data = f
-                break
-
-        if 'compositions' not in class_data:
-            class_data['compositions'] = []
-
-        if field_data and self._is_composition_field(field_name, field_data['type'], class_data['compositions']):
-            reply = QMessageBox.question(self, "Pole kompozycji",
-                                    f"Pole '{field_name}' reprezentuje kompozycję z klasą '{field_data['type']}'. "
-                                    f"Usunięcie tego pola usunie również relację kompozycji (jeśli to ostatnie takie pole). Kontynuować?",
-                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                    QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.No:
-                return
 
         initial_len = len(class_data['fields'])
         class_data['fields'] = [
             field for field in class_data['fields']
             if field['name'] != field_name
         ]
-
-        if field_data and self._is_composition_field(field_name, field_data['type'], class_data['compositions']):
-            target_class = field_data['type']
-            remaining_comp_fields = [
-                f for f in class_data['fields']
-                if self._is_composition_field(f['name'], f['type'], [target_class])
-            ]
-            if not remaining_comp_fields:
-                class_data['compositions'] = [
-                    c for c in class_data['compositions']
-                    if c != target_class
-                ]
-                QMessageBox.information(self, "Kompozycja usunięta",
-                                    f"Usunięto również relację kompozycji z '{target_class}', ponieważ było to ostatnie pole reprezentujące tę relację.")
 
         if len(class_data['fields']) < initial_len:
             self._update_editor_fields_list()
@@ -681,7 +771,7 @@ class ClassDiagramEditor(QMainWindow):
     def _check_reverse_inheritance(self, source: str, target: str) -> bool:
         current = target
         visited = set()
-        
+
         while current in self.classes:
             if current == source:
                 return True
@@ -689,33 +779,6 @@ class ClassDiagramEditor(QMainWindow):
                 return False
             visited.add(current)
             current = self.classes[current].get('inherits')
-        
-        return False
-
-    def _check_composition_cycle(self, source: str, target: str) -> bool:
-        queue = [target]
-        visited = set()
-
-        while queue:
-            current = queue.pop(0)
-
-            if current == source:
-                return True
-
-            if current in visited:
-                continue
-            visited.add(current)
-
-            if current not in self.classes:
-                continue
-
-            class_data = self.classes[current]
-
-            queue.extend(class_data.get('compositions', []))
-
-            parent = class_data.get('inherits')
-            if parent:
-                queue.append(parent)
 
         return False
 
@@ -729,7 +792,6 @@ class ClassDiagramEditor(QMainWindow):
             QMessageBox.warning(self, "Błąd", "Nie wybrano klasy docelowej relacji.")
             return
 
-        relation_type = self.editor_relation_type_combo.currentText()
         source_class = self.selected_class_editor
         source_data = self.classes[source_class]
 
@@ -737,131 +799,63 @@ class ClassDiagramEditor(QMainWindow):
             QMessageBox.warning(self, "Błąd", "Klasa nie może mieć relacji z samą sobą!")
             return
 
-        if relation_type == "Dziedziczenie":
-            if self._check_reverse_inheritance(source_class, target_class):
-                QMessageBox.warning(self, "Błąd cyklu",
-                                    f"Nie można ustawić dziedziczenia: '{target_class}' już dziedziczy (bezpośrednio lub pośrednio) po '{source_class}'.")
+        if self._check_reverse_inheritance(source_class, target_class):
+            QMessageBox.warning(self, "Błąd cyklu",
+                                f"Nie można ustawić dziedziczenia: '{target_class}' już dziedziczy (bezpośrednio lub pośrednio) po '{source_class}'.")
+            return
+
+        if self._check_inheritance_cycle(source_class, target_class):
+            QMessageBox.warning(self, "Błąd cyklu",
+                                f"Ustawienie dziedziczenia '{source_class}' -> '{target_class}' utworzyłoby cykl dziedziczenia!")
+            return
+
+        original_parent = source_data.get('inherits')
+        if original_parent and original_parent != target_class:
+            reply = QMessageBox.question(
+                self, "Zmiana dziedziczenia",
+                f"Klasa '{source_class}' już dziedziczy po '{original_parent}'. Zmienić na '{target_class}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
                 return
+        elif original_parent == target_class:
+            QMessageBox.information(self, "Info", f"Klasa '{source_class}' już dziedziczy po '{target_class}'.")
+            return
 
-            if self._check_inheritance_cycle(source_class, target_class):
-                QMessageBox.warning(self, "Błąd cyklu",
-                                    f"Ustawienie dziedziczenia '{source_class}' -> '{target_class}' utworzyłoby cykl dziedziczenia!")
-                return
-
-            original_parent = source_data.get('inherits')
-            if original_parent and original_parent != target_class:
-                reply = QMessageBox.question(
-                    self, "Zmiana dziedziczenia",
-                    f"Klasa '{source_class}' już dziedziczy po '{original_parent}'. Zmienić na '{target_class}'?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.No:
-                    return
-            elif original_parent == target_class:
-                QMessageBox.information(self, "Info", f"Klasa '{source_class}' już dziedziczy po '{target_class}'.")
-                return
-
-            source_data['inherits'] = target_class
-            QMessageBox.information(self, "Sukces", f"Ustawiono dziedziczenie: {source_class} -> {target_class}")
-
-        elif relation_type == "Kompozycja":
-            if self._check_composition_cycle(source_class, target_class):
-                QMessageBox.warning(self, "Błąd cyklu",
-                                    f"Dodanie kompozycji '{source_class}' --<> '{target_class}' utworzyłoby cykl zależności (przez kompozycje i/lub dziedziczenie)!")
-                return
-
-            field_name = self._generate_composition_field_name(source_class, target_class)
-            field_type = target_class
-
-            source_data.setdefault('fields', []).append({'name': field_name, 'type': field_type})
-            if target_class not in source_data.setdefault('compositions', []):
-                source_data['compositions'].append(target_class)
-
-            QMessageBox.information(self, "Sukces",
-                                    f"Dodano kompozycję: {source_class} --<> {target_class} (utworzono pole '{field_name}': {field_type})")
+        source_data['inherits'] = target_class
+        QMessageBox.information(self, "Sukces", f"Ustawiono dziedziczenie: {source_class} -> {target_class}")
 
         self._update_all_class_editor_views()
         self.classes_changed.emit()
 
     def delete_relation(self):
-        if not self.selected_class_editor: return
+        if not self.selected_class_editor:
+            return
 
-        relation_type = self.editor_relation_type_combo.currentText()
         source_class = self.selected_class_editor
         source_data = self.classes[source_class]
 
-        if relation_type == "Dziedziczenie":
-            current_inheritance = source_data.get('inherits')
-            if not current_inheritance:
-                QMessageBox.warning(self, "Błąd", f"Klasa '{source_class}' aktualnie nie dziedziczy po żadnej klasie.")
-                return
+        current_inheritance = source_data.get('inherits')
+        if not current_inheritance:
+            QMessageBox.warning(self, "Błąd", f"Klasa '{source_class}' aktualnie nie dziedziczy po żadnej klasie.")
+            return
 
-            reply = QMessageBox.question(self, "Potwierdzenie",
-                                         f"Czy na pewno chcesz usunąć dziedziczenie klasy '{source_class}' po klasie '{current_inheritance}'?",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                         QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                source_data['inherits'] = None
-                QMessageBox.information(self, "Sukces",
-                                        f"Usunięto dziedziczenie klasy '{source_class}' po '{current_inheritance}'.")
-                self._update_all_class_editor_views()
-                self.classes_changed.emit()
-
-        elif relation_type == "Kompozycja":
-            target_class = self.editor_relation_target_combo.currentText()
-            if not target_class:
-                QMessageBox.warning(self, "Błąd", "Nie wybrano klasy docelowej dla kompozycji do usunięcia.")
-                return
-
-            current_compositions = source_data.get('compositions', [])
-            if target_class not in current_compositions:
-                QMessageBox.warning(self, "Błąd",
-                                    f"Klasa '{source_class}' nie ma zdefiniowanej relacji kompozycji z '{target_class}'.\n(Mogą istnieć pola tego typu, ale bez formalnej relacji kompozycji).")
-                return
-
-            composition_fields_to_remove = [
-                f for f in source_data.get('fields', [])
-                if self._is_composition_field(f['name'], f['type'], [target_class])
-            ]
-
-            if not composition_fields_to_remove:
-                reply = QMessageBox.question(self, "Niespójność",
-                                             f"Istnieje relacja kompozycji z '{target_class}', ale nie znaleziono powiązanych pól (np. 'composed_{target_class.lower()}_N').\n"
-                                             f"Czy chcesz usunąć tylko formalną relację kompozycji?",
-                                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                             QMessageBox.StandardButton.Yes)
-                if reply == QMessageBox.StandardButton.No: return
-
-            else:
-                field_names = [f"'{f['name']}'" for f in composition_fields_to_remove]
-                reply = QMessageBox.question(self, "Potwierdzenie",
-                                             f"Czy na pewno chcesz usunąć kompozycję klasy '{source_class}' z '{target_class}'?\n"
-                                             f"Spowoduje to usunięcie następujących pól: {', '.join(field_names)}.",
-                                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                             QMessageBox.StandardButton.No)
-
-                if reply == QMessageBox.StandardButton.No:
-                    return
-
-                field_names_set = {f['name'] for f in composition_fields_to_remove}
-                source_data['fields'] = [
-                    f for f in source_data.get('fields', [])
-                    if f['name'] not in field_names_set
-                ]
-
-            source_data['compositions'] = [c for c in current_compositions if c != target_class]
-
+        reply = QMessageBox.question(self, "Potwierdzenie",
+                                     f"Czy na pewno chcesz usunąć dziedziczenie klasy '{source_class}' po klasie '{current_inheritance}'?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            source_data['inherits'] = None
             QMessageBox.information(self, "Sukces",
-                                    f"Usunięto kompozycję z '{target_class}'" + (
-                                        f" oraz powiązane pola: {', '.join(field_names)}." if composition_fields_to_remove else "."))
+                                    f"Usunięto dziedziczenie klasy '{source_class}' po '{current_inheritance}'.")
             self._update_all_class_editor_views()
             self.classes_changed.emit()
 
     def _check_inheritance_cycle(self, child_class: str, new_parent: str) -> bool:
         current = new_parent
         visited = set()
-        
+
         while current in self.classes:
             if current == child_class:
                 return True
@@ -869,13 +863,15 @@ class ClassDiagramEditor(QMainWindow):
                 return False
             visited.add(current)
             current = self.classes[current].get('inherits')
-        
+
         return False
 
     def _get_all_fields_recursive(self, class_name: str, visited: Optional[set] = None) -> List[Dict[str, Any]]:
-        if class_name not in self.classes: return []
+        if class_name not in self.classes:
+            return []
 
-        if visited is None: visited = set()
+        if visited is None:
+            visited = set()
         if class_name in visited:
             print(f"Warning: Cycle detected involving class '{class_name}' while getting fields. Stopping recursion.")
             return []
@@ -896,30 +892,6 @@ class ClassDiagramEditor(QMainWindow):
         visited.remove(class_name)
 
         return list(fields_map.values())
-
-    def _is_composition_field(self, field_name: str, field_type: str, composition_targets: List[str]) -> bool:
-        base_type = field_type[5:-1] if field_type.startswith("List[") else field_type
-        if base_type not in composition_targets:
-            return False
-
-        expected_prefix = f"composed_{base_type.lower()}_"
-        return field_name.startswith(expected_prefix)
-
-    def _generate_composition_field_name(self, source_class: str, target_class: str) -> str:
-        if not self.selected_class_editor: return f"error_no_source_selected"
-
-        base_name = f"composed_{target_class.lower()}"
-        counter = 1
-        field_name = f"{base_name}_{counter}"
-
-        all_fields_data = self._get_all_fields_recursive(self.selected_class_editor)
-        existing_field_names = {f['field']['name'] for f in all_fields_data}
-
-        while field_name in existing_field_names:
-            counter += 1
-            field_name = f"{base_name}_{counter}"
-
-        return field_name
 
     def _update_all_class_editor_views(self):
         current_selected_class = self.selected_class_editor
@@ -991,7 +963,8 @@ class ClassDiagramEditor(QMainWindow):
 
     def _update_editor_relation_targets(self):
         self.editor_relation_target_combo.clear()
-        if not self.selected_class_editor: return
+        if not self.selected_class_editor:
+            return
 
         available_targets = sorted([
             name for name in self.classes if name != self.selected_class_editor
@@ -1003,15 +976,16 @@ class ClassDiagramEditor(QMainWindow):
         tree_items: Dict[str, QTreeWidgetItem] = {}
 
         def get_or_create_item(class_name: str) -> Optional[QTreeWidgetItem]:
-            if class_name not in self.classes: return None
-            if class_name in tree_items: return tree_items[class_name]
+            if class_name not in self.classes:
+                return None
+            if class_name in tree_items:
+                return tree_items[class_name]
 
             class_data = self.classes[class_name]
             item = QTreeWidgetItem([class_name])
             tree_items[class_name] = item
 
             own_fields = class_data.get('fields', [])
-            compositions = class_data.get('compositions', [])
             if own_fields:
                 fields_node = QTreeWidgetItem(["Pola własne:"])
                 font = fields_node.font(0)
@@ -1019,30 +993,11 @@ class ClassDiagramEditor(QMainWindow):
                 fields_node.setFont(0, font)
                 fields_node.setForeground(0, Qt.GlobalColor.darkGray)
 
-                added_field = False
                 for field in sorted(own_fields, key=lambda x: x['name']):
-                    if not self._is_composition_field(field['name'], field['type'], compositions):
-                        field_item = QTreeWidgetItem([f"  {field['name']}: {field['type']}"])
-                        fields_node.addChild(field_item)
-                        added_field = True
+                    field_item = QTreeWidgetItem([f"  {field['name']}: {field['type']}"])
+                    fields_node.addChild(field_item)
 
-                if added_field:
-                    item.addChild(fields_node)
-
-            if compositions:
-                comp_node = QTreeWidgetItem(["Kompozycje:"])
-                font = comp_node.font(0)
-                font.setItalic(True)
-                comp_node.setFont(0, font)
-                comp_node.setForeground(0, Qt.GlobalColor.darkBlue)
-                item.addChild(comp_node)
-
-                for comp_target in sorted(compositions):
-                    comp_fields = [f['name'] for f in own_fields if
-                                   self._is_composition_field(f['name'], f.get('type', ''), [comp_target])]
-                    field_info = f" (pola: {', '.join(comp_fields)})" if comp_fields else ""
-                    comp_child = QTreeWidgetItem([f"  <>-- {comp_target}{field_info}"])
-                    comp_node.addChild(comp_child)
+                item.addChild(fields_node)
 
             return item
 
@@ -1051,10 +1006,12 @@ class ClassDiagramEditor(QMainWindow):
 
         sorted_class_names = sorted(self.classes.keys())
         for class_name in sorted_class_names:
-            if class_name in processed: continue
+            if class_name in processed:
+                continue
 
             item = get_or_create_item(class_name)
-            if not item: continue
+            if not item:
+                continue
 
             parent_name = self.classes[class_name].get('inherits')
 
