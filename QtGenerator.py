@@ -14,7 +14,7 @@ import string
 import importlib
 import inspect
 import ast
-
+import textwrap
 # --- Type Definitions (Optional but good practice) ---
 ClassData = Dict[str, Any]
 ClassesDict = Dict[str, ClassData]
@@ -347,91 +347,151 @@ class ObjectGeneratorApp(QMainWindow):
         module_name = module.__name__
 
         for name, obj in inspect.getmembers(module):
-            # Ensure it's a class defined directly in the target module
             if inspect.isclass(obj) and getattr(obj, '__module__', None) == module_name:
                 parent = None
-                # Check bases carefully
                 try:
                     for base in obj.__bases__:
-                        # Ensure base is also from the same module and not 'object'
                         if getattr(base, '__module__', None) == module_name and base is not object:
-                             # Check if base class name exists as a key in potential classes from this module
-                             base_name = base.__name__
-                             # We might not have analyzed the base yet, just store the name
-                             parent = base_name
-                             break # Take the first valid parent found
-                except AttributeError: # Handle classes without __bases__? Unlikely for user classes
-                     pass
+                            parent = base.__name__
+                            break
+                except AttributeError:
+                    pass
 
                 fields = []
-                try:
-                    # Prefer __init__ signature
-                    init_sig = inspect.signature(obj.__init__)
-                    for param_name, param in init_sig.parameters.items():
-                        if param_name == 'self': continue
+                composition_fields = []
 
-                        param_type_str = "Any" # Default if unknown
+                try:
+                    # Analizuj konstruktor
+                    init_sig = inspect.signature(obj.__init__)
+                    source_code = inspect.getsource(obj.__init__)
+
+                    # Znajdź kompozycje w kodzie konstruktora
+                    composition_fields = self._extract_composition_from_constructor(source_code, module_name)
+
+                    for param_name, param in init_sig.parameters.items():
+                        if param_name == 'self':
+                            continue
+
+                        param_type_str = "Any"
                         annotation = param.annotation
 
                         if annotation != inspect.Parameter.empty:
-                             if isinstance(annotation, str): # Handle forward references ('Book')
-                                  param_type_str = annotation
-                             elif hasattr(annotation, '__name__'): # Standard types (int, str, Book)
-                                  param_type_str = annotation.__name__
-                             elif hasattr(annotation, '__origin__'): # Generics (Optional, Union, List, Dict)
-                                  origin = annotation.__origin__
-                                  origin_name = getattr(origin, '__name__', str(origin))
-                                  args = getattr(annotation, '__args__', [])
-                                  arg_names = []
-                                  for arg in args:
-                                       if isinstance(arg, type(None)): arg_names.append('NoneType')
-                                       elif hasattr(arg, '__name__'): arg_names.append(arg.__name__)
-                                       elif isinstance(arg, str): arg_names.append(arg) # Forward ref within generic
-                                       else: arg_names.append(str(arg))
-                                  param_type_str = f"{origin_name}[{', '.join(arg_names)}]"
-                             else: # Fallback for complex annotations
-                                  param_type_str = str(annotation).replace(f"{module_name}.", "") # Clean up module name
-
+                            if isinstance(annotation, str):
+                                param_type_str = annotation
+                            elif hasattr(annotation, '__name__'):
+                                param_type_str = annotation.__name__
+                            elif hasattr(annotation, '__origin__'):
+                                origin = annotation.__origin__
+                                origin_name = getattr(origin, '__name__', str(origin))
+                                args = getattr(annotation, '__args__', [])
+                                arg_names = []
+                                for arg in args:
+                                    if isinstance(arg, type(None)):
+                                        arg_names.append('NoneType')
+                                    elif hasattr(arg, '__name__'):
+                                        arg_names.append(arg.__name__)
+                                    elif isinstance(arg, str):
+                                        arg_names.append(arg)
+                                    else:
+                                        arg_names.append(str(arg))
+                                param_type_str = f"{origin_name}[{', '.join(arg_names)}]"
+                            else:
+                                param_type_str = str(annotation).replace(f"{module_name}.", "")
                         elif param.default != inspect.Parameter.empty and param.default is not None:
-                             # Infer type from default value if no annotation
-                             param_type_str = type(param.default).__name__
+                            param_type_str = type(param.default).__name__
 
                         fields.append({"name": param_name, "type": param_type_str})
 
-                except (ValueError, TypeError, AttributeError): # Handle missing __init__ or other issues
-                     # Fallback: check class annotations if __init__ fails
+                    # Dodaj pola kompozycji
+                    fields.extend(composition_fields)
+
+                except (ValueError, TypeError, AttributeError):
                     try:
-                        annotations = inspect.get_annotations(obj, eval_str=True) # eval_str=True for forward refs
+                        annotations = inspect.get_annotations(obj, eval_str=True)
                         existing_field_names = {f['name'] for f in fields}
                         for attr_name, attr_type in annotations.items():
-                             if not attr_name.startswith('_') and attr_name not in existing_field_names:
-                                 type_name = "Any"
-                                 if hasattr(attr_type, '__name__'): type_name = attr_type.__name__
-                                 elif hasattr(attr_type, '__origin__'): # Generics in annotations
-                                     origin = attr_type.__origin__
-                                     origin_name = getattr(origin, '__name__', str(origin))
-                                     args = getattr(attr_type, '__args__', [])
-                                     arg_names = []
-                                     for arg in args:
-                                          if isinstance(arg, type(None)): arg_names.append('NoneType')
-                                          elif hasattr(arg, '__name__'): arg_names.append(arg.__name__)
-                                          else: arg_names.append(str(arg))
-                                     type_name = f"{origin_name}[{', '.join(arg_names)}]"
-                                 else: type_name = str(attr_type).replace(f"{module_name}.", "")
-
-                                 fields.append({"name": attr_name, "type": type_name})
+                            if not attr_name.startswith('_') and attr_name not in existing_field_names:
+                                type_name = "Any"
+                                if hasattr(attr_type, '__name__'):
+                                    type_name = attr_type.__name__
+                                elif hasattr(attr_type, '__origin__'):
+                                    origin = attr_type.__origin__
+                                    origin_name = getattr(origin, '__name__', str(origin))
+                                    args = getattr(attr_type, '__args__', [])
+                                    arg_names = []
+                                    for arg in args:
+                                        if isinstance(arg, type(None)):
+                                            arg_names.append('NoneType')
+                                        elif hasattr(arg, '__name__'):
+                                            arg_names.append(arg.__name__)
+                                        else:
+                                            arg_names.append(str(arg))
+                                    type_name = f"{origin_name}[{', '.join(arg_names)}]"
+                                else:
+                                    type_name = str(attr_type).replace(f"{module_name}.", "")
+                                fields.append({"name": attr_name, "type": type_name})
                     except Exception as e_annot:
-                         print(f"Debug: Could not process annotations for {name}: {e_annot}")
-
+                        print(f"Debug: Could not process annotations for {name}: {e_annot}")
 
                 classes[name] = {
                     "fields": fields,
                     "inherits": parent,
                     "class_obj": obj
                 }
-                # print(f"Analyzed class: {name}, Fields: {fields}, Inherits: {parent}") # Debug print
 
         return classes
+
+    import textwrap
+
+    def _extract_composition_from_constructor(self, source_code: str, module_name: str) -> List[Dict[str, str]]:
+        """Wyciąga kompozycje z kodu konstruktora."""
+        composition_fields = []
+
+        try:
+            # Usuń wcięcia z kodu źródłowego
+            dedented_code = textwrap.dedent(source_code)
+
+            # Jeśli kod nadal ma problemy z wcięciami, użyj workaround
+            lines = dedented_code.split('\n')
+            if lines and lines[0].strip().startswith('def '):
+                # Kod już jest poprawnie sformatowany
+                clean_code = dedented_code
+            else:
+                # Dodaj dummy wrapper dla wcięć
+                clean_code = "if True:\n" + textwrap.indent(dedented_code, "    ")
+
+            # Parsuj kod źródłowy
+            tree = ast.parse(clean_code)
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    # Szukaj przypisań typu self.attr = ClassName(...)
+                    for target in node.targets:
+                        if (isinstance(target, ast.Attribute) and
+                                isinstance(target.value, ast.Name) and
+                                target.value.id == 'self'):
+
+                            attr_name = target.attr
+
+                            # Sprawdź czy wartość to wywołanie konstruktora
+                            if isinstance(node.value, ast.Call):
+                                class_name = None
+                                if isinstance(node.value.func, ast.Name):
+                                    class_name = node.value.func.id
+                                elif isinstance(node.value.func, ast.Attribute):
+                                    # Obsługa module.ClassName
+                                    if hasattr(node.value.func, 'attr'):
+                                        class_name = node.value.func.attr
+
+                                if class_name and class_name in self.classes:
+                                    composition_fields.append({
+                                        "name": attr_name,
+                                        "type": class_name
+                                    })
+        except Exception as e:
+            print(f"Błąd podczas analizy kompozycji: {e}")
+
+        return composition_fields
 
     def _setup_ui(self):
         """Configures the main user interface."""
@@ -559,48 +619,97 @@ class ObjectGeneratorApp(QMainWindow):
         all_fields = self._get_all_fields_recursive(selected_class)
         all_fields.sort(key=lambda x: x['field']['name'])
 
+        # Grupuj pola kompozycji
+        composition_groups = {}
+        regular_fields = []
+
         for field_info in all_fields:
             field = field_info['field']
             field_name = field['name']
             field_type = field['type']
 
-            label = QLabel(f"{field_name} ({field_type})")
-            input_widget = None
-
-            # Dodane obsługę nowych typów
-            if field_type in ["List[float]", "List[int]", "List[str]"]:
-                input_widget = QLineEdit()
-                input_widget.setPlaceholderText(f"Wpisz listę jako Python literal (np. [1.0, 2.0] dla List[float])")
-            elif field_type in ["Dict[str, str]", "Dict[str, int]", "Dict[str, float]"]:
-                input_widget = QLineEdit()
-                input_widget.setPlaceholderText(f"Wpisz słownik jako Python literal (np. {{'klucz': wartość}})")
-            elif field_type in ["Set[int]", "Set[float]", "Set[str]", "FrozenSet[int]", "FrozenSet[float]", "FrozenSet[str]"]:
-                input_widget = QLineEdit()
-                input_widget.setPlaceholderText(f"Wpisz zbiór jako Python literal (np. {{1, 2, 3}})")
-            elif field_type == "float":
-                input_widget = QLineEdit()
-                validator = QDoubleValidator()
-                validator.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-                input_widget.setValidator(validator)
-            elif field_type == "int":
-                input_widget = QSpinBox()
-                input_widget.setRange(-2147483647, 2147483647)
-            elif field_type == "bool":
-                input_widget = QCheckBox()
-            elif field_type == "str":
-                input_widget = QLineEdit()
-            elif field_type in self.classes:  # Composition
-                input_widget = QComboBox()
-                input_widget.addItem("(Brak)")
-                for obj_name, obj_instance in self.objects.items():
-                    if obj_instance.__class__.__name__ == field_type:
-                        input_widget.addItem(obj_name)
+            if field_type in self.classes:
+                # To jest kompozycja - znajdź pola konstruktora tej klasy
+                comp_class_fields = self._get_all_fields_recursive(field_type)
+                if field_type not in composition_groups:
+                    composition_groups[field_type] = {
+                        'attribute_name': field_name,
+                        'fields': comp_class_fields
+                    }
             else:
-                input_widget = QLineEdit()
-                input_widget.setPlaceholderText(f"(Typ: {field_type})")
+                regular_fields.append(field_info)
+
+        # Dodaj regularne pola
+        for field_info in regular_fields:
+            field = field_info['field']
+            field_name = field['name']
+            field_type = field['type']
+
+            label = QLabel(f"{field_name} ({field_type})")
+            input_widget = self._create_input_widget(field_type)
 
             if input_widget:
                 self.object_fields_layout.addRow(label, input_widget)
+
+        # Dodaj pola kompozycji
+        for comp_type, comp_info in composition_groups.items():
+            # Dodaj separator dla kompozycji
+            separator_label = QLabel(f"=== Kompozycja: {comp_info['attribute_name']} ({comp_type}) ===")
+            font = separator_label.font()
+            font.setBold(True)
+            separator_label.setFont(font)
+            self.object_fields_layout.addRow(separator_label)
+
+            # Dodaj pola dla parametrów kompozycji
+            for comp_field_info in comp_info['fields']:
+                comp_field = comp_field_info['field']
+                comp_field_name = comp_field['name']
+                comp_field_type = comp_field['type']
+
+                # Utwórz nazwę pola z prefiksem klasy
+                prefixed_name = f"{comp_type.lower()}_{comp_field_name}"
+
+                label = QLabel(f"{prefixed_name} ({comp_field_type})")
+                input_widget = self._create_input_widget(comp_field_type)
+
+                if input_widget:
+                    self.object_fields_layout.addRow(label, input_widget)
+
+    def _create_input_widget(self, field_type: str):
+        """Tworzy odpowiedni widget dla danego typu pola."""
+        if field_type in ["List[float]", "List[int]", "List[str]"]:
+            input_widget = QLineEdit()
+            input_widget.setPlaceholderText(f"Wpisz listę jako Python literal (np. [1.0, 2.0] dla List[float])")
+        elif field_type in ["Dict[str, str]", "Dict[str, int]", "Dict[str, float]"]:
+            input_widget = QLineEdit()
+            input_widget.setPlaceholderText(f"Wpisz słownik jako Python literal (np. {{'klucz': wartość}})")
+        elif field_type in ["Set[int]", "Set[float]", "Set[str]", "FrozenSet[int]", "FrozenSet[float]",
+                            "FrozenSet[str]"]:
+            input_widget = QLineEdit()
+            input_widget.setPlaceholderText(f"Wpisz zbiór jako Python literal (np. {{1, 2, 3}})")
+        elif field_type == "float":
+            input_widget = QLineEdit()
+            validator = QDoubleValidator()
+            validator.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+            input_widget.setValidator(validator)
+        elif field_type == "int":
+            input_widget = QSpinBox()
+            input_widget.setRange(-2147483647, 2147483647)
+        elif field_type == "bool":
+            input_widget = QCheckBox()
+        elif field_type == "str":
+            input_widget = QLineEdit()
+        elif field_type in self.classes:  # Composition
+            input_widget = QComboBox()
+            input_widget.addItem("(Brak)")
+            for obj_name, obj_instance in self.objects.items():
+                if obj_instance.__class__.__name__ == field_type:
+                    input_widget.addItem(obj_name)
+        else:
+            input_widget = QLineEdit()
+            input_widget.setPlaceholderText(f"(Typ: {field_type})")
+
+        return input_widget
 
     def _get_all_fields_recursive(self, class_name: str, visited=None) -> List[Dict[str, Any]]:
         """Recursively gets all fields (own and inherited) for a class."""
@@ -813,7 +922,8 @@ class ObjectGeneratorApp(QMainWindow):
             QMessageBox.warning(self, "Błąd", "Nazwa obiektu nie może być pusta.")
             return
 
-        attributes = {}
+        # Zbierz dane z formularza
+        form_data = {}
         conversion_errors = []
 
         for i in range(self.object_fields_layout.rowCount()):
@@ -833,20 +943,14 @@ class ObjectGeneratorApp(QMainWindow):
             except Exception:
                 continue
 
+            # Pobierz wartość z widgetu
             value = None
             try:
                 if isinstance(field_widget, QLineEdit):
                     text_value = field_widget.text()
-                    if not text_value:
-                        value = None
-                    else:
-                        # Parsowanie specjalnych typów
-                        if field_type in ["List[float]", "List[int]", "List[str]"]:
-                            value = ast.literal_eval(text_value)
-                        elif field_type in ["Dict[str, str]", "Dict[str, int]", "Dict[str, float]"]:
-                            value = ast.literal_eval(text_value)
-                        elif field_type in ["Set[int]", "Set[float]", "Set[str]", "FrozenSet[int]", "FrozenSet[float]", "FrozenSet[str]"]:
-                            value = ast.literal_eval(text_value)
+                    if text_value:
+                        if field_type == "int":
+                            value = int(text_value)
                         elif field_type == "float":
                             value = float(text_value)
                         elif field_type == "str":
@@ -857,36 +961,116 @@ class ObjectGeneratorApp(QMainWindow):
                     value = field_widget.value()
                 elif isinstance(field_widget, QCheckBox):
                     value = field_widget.isChecked()
-                elif isinstance(field_widget, QComboBox):  # Composition
-                    selected_text = field_widget.currentText()
-                    value = None if selected_text == "(Brak)" else self.objects.get(selected_text)
 
-                attributes[field_name] = value
-            except (ValueError, TypeError, SyntaxError) as e:
+                form_data[field_name] = value
+            except (ValueError, TypeError) as e:
                 conversion_errors.append(f"Pole '{field_name}': {e}")
 
         if conversion_errors:
             QMessageBox.warning(self, "Błąd danych wejściowych", "Popraw błędy:\n\n" + "\n".join(conversion_errors))
             return
 
-        # Tworzenie lub aktualizacja obiektu
+        # Przygotuj argumenty konstruktora z inteligentną analizą kompozycji
+        constructor_args = self._prepare_constructor_args(class_name, form_data)
+
         try:
             if object_name in self.objects:  # Update
+                # Dla aktualizacji, ustaw atrybuty bezpośrednio
                 obj = self.objects[object_name]
-                for attr_name, attr_value in attributes.items():
+                for attr_name, attr_value in constructor_args.items():
                     setattr(obj, attr_name, attr_value)
-                self.object_data[object_name]['attributes'].update(attributes)
             else:  # Create new
-                constructor_args = attributes
                 obj = self.classes[class_name]['class_obj'](**constructor_args)
                 self.objects[object_name] = obj
                 self.object_data[object_name] = {'class': class_name, 'attributes': constructor_args.copy()}
 
             self.object_name_input.clear()
             self.objects_changed.emit()
-            QMessageBox.information(self, "Sukces", f"Obiekt '{object_name}' {'zaktualizowany' if object_name in self.objects else 'utworzony'}.")
+            QMessageBox.information(self, "Sukces",
+                                    f"Obiekt '{object_name}' {'zaktualizowany' if object_name in self.objects else 'utworzony'}.")
         except Exception as e:
             QMessageBox.critical(self, "Błąd", f"Nie udało się utworzyć/zaktualizować obiektu: {e}")
+
+    def _prepare_constructor_args(self, class_name: str, form_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Przygotowuje argumenty konstruktora, analizując kompozycje."""
+        constructor_args = {}
+
+        # Pobierz sygnaturę konstruktora
+        try:
+            class_obj = self.classes[class_name]['class_obj']
+            init_sig = inspect.signature(class_obj.__init__)
+
+            for param_name, param in init_sig.parameters.items():
+                if param_name == 'self':
+                    continue
+
+                # Sprawdź czy w form_data jest bezpośrednia wartość dla tego parametru
+                if param_name in form_data:
+                    constructor_args[param_name] = form_data[param_name]
+                else:
+                    # Sprawdź czy to może być kompozycja - szukaj pól z prefiksem
+                    # Dla Klasa2(aaaa_aaa, aaaa_dddd) szukaj pól zaczynających się od nazwy klasy
+                    potential_prefix = f"{class_name.lower()}_"
+                    matching_fields = {k: v for k, v in form_data.items()
+                                       if k.startswith(potential_prefix)}
+
+                    if matching_fields:
+                        # Usuń prefiks i użyj jako argument
+                        clean_param = param_name.replace(potential_prefix, "")
+                        if f"{potential_prefix}{clean_param}" in form_data:
+                            constructor_args[param_name] = form_data[f"{potential_prefix}{clean_param}"]
+
+                    # Jeśli nadal nie znaleziono, spróbuj dopasować po typie parametru
+                    if param_name not in constructor_args:
+                        param_type_str = str(param.annotation) if param.annotation != inspect.Parameter.empty else "Any"
+                        param_type_name = param_type_str.split('.')[-1]
+
+                        # Szukaj pól które mogą pasować do tego typu
+                        for field_name, field_value in form_data.items():
+                            if param_type_name.lower() in field_name.lower():
+                                constructor_args[param_name] = field_value
+                                break
+
+                        # Ostatnia deska ratunku - użyj wartości domyślnej lub None
+                        if param_name not in constructor_args:
+                            if param.default != inspect.Parameter.empty:
+                                constructor_args[param_name] = param.default
+                            else:
+                                # Spróbuj znaleźć wartość na podstawie nazwy parametru
+                                for field_name, field_value in form_data.items():
+                                    if param_name in field_name or field_name in param_name:
+                                        constructor_args[param_name] = field_value
+                                        break
+
+        except Exception as e:
+            print(f"Błąd podczas przygotowywania argumentów konstruktora: {e}")
+            # Fallback - użyj form_data bezpośrednio
+            constructor_args = form_data.copy()
+
+        return constructor_args
+
+    def _is_composition_field_type(self, field_type: str) -> bool:
+        """Sprawdza czy typ pola to kompozycja."""
+        return field_type in self.classes
+
+    def _extract_composition_param_name(self, field_name: str, class_type: str) -> str:
+        """Wyciąga nazwę parametru z nazwy pola kompozycji."""
+        # Usuń prefiks nazwy klasy z nazwy pola
+        class_prefix = class_type.lower() + "_"
+        if field_name.startswith(class_prefix):
+            return field_name[len(class_prefix):]
+        return field_name
+
+    def _find_composition_attribute_name(self, class_name: str, comp_type: str) -> str:
+        """Znajduje nazwę atrybutu kompozycji w klasie."""
+        if class_name not in self.classes:
+            return None
+
+        fields = self.classes[class_name].get('fields', [])
+        for field in fields:
+            if field['type'] == comp_type:
+                return field['name']
+        return None
 
     def _edit_selected_object(self):
         """Loads the selected object's data into the form for editing."""
@@ -1393,6 +1577,28 @@ class ObjectGeneratorApp(QMainWindow):
 
         return False
 
+    def _get_object_attribute_safely(self, obj_instance, attr_name):
+        """Bezpiecznie pobiera atrybut obiektu, obsługując kompozycje."""
+        try:
+            # Najpierw spróbuj standardowego getattr
+            return getattr(obj_instance, attr_name)
+        except AttributeError:
+            # Jeśli nie ma atrybutu, sprawdź czy to może być kompozycja
+            # Szukaj atrybutów które mogą zawierać pożądane dane
+            for actual_attr_name in dir(obj_instance):
+                if actual_attr_name.startswith('_'):
+                    continue
+                try:
+                    actual_attr_value = getattr(obj_instance, actual_attr_name)
+                    # Sprawdź czy to obiekt kompozycji który ma pożądany atrybut
+                    if hasattr(actual_attr_value, attr_name.split('_')[-1]):
+                        return getattr(actual_attr_value, attr_name.split('_')[-1])
+                except:
+                    continue
+
+            # Jeśli nadal nie znaleziono, zwróć None
+            return None
+
     def _update_object_tree(self):
         """Updates the tree view with the current state of objects."""
         self.object_tree.clear()
@@ -1427,7 +1633,7 @@ class ObjectGeneratorApp(QMainWindow):
                 for attr_name in field_names:
                     attr_value_str = "<Błąd odczytu>"  # Initialize default value
                     try:
-                        attr_value = getattr(obj_instance, attr_name)
+                        attr_value = self._get_object_attribute_safely(obj_instance, attr_name)
                         
                         if attr_value is None:
                             attr_value_str = "None"

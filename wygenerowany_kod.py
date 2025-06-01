@@ -1,9 +1,12 @@
+from typing import List, Set, FrozenSet
 
-class Klasa:
-    def __init__(self, aaa: str, dddd: int):
-        self.aaa: str = aaa
-        self.dddd: int = dddd
+class Produkt:
+    def __init__(self, nazwa: str, cena: float):
+        self.nazwa = nazwa
+        self.cena = cena
 
-class Klasa2:
-    def __init__(self, aaaa_aaa: str, aaaa_dddd: int):
-        self.aaaa: Klasa = Klasa(aaaa_aaa, aaaa_dddd)
+class Magazyn:
+    def __init__(self):
+        self.produkty: List[Produkt] = []
+
+

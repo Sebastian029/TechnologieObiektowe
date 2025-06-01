@@ -50,37 +50,42 @@ class UniversalConverterApp(QWidget):
         
         layout.addLayout(button_layout)
         self.setLayout(layout)
-    
+
     def get_objects(self):
-        local_vars = {}
+        namespace = {}
         try:
-            exec(self.class_code_edit.toPlainText(), globals(), local_vars)
-            
-            exec(self.objects_code_edit.toPlainText(), globals(), local_vars)
-            
+            # Połącz oba kody w jeden string
+            full_code = self.class_code_edit.toPlainText() + "\n" + self.objects_code_edit.toPlainText()
+            exec(full_code, namespace)
+
+            # Lub wykonaj oba w tym samym namespace (Twoja obecna metoda powinna działać)
+            # exec(self.class_code_edit.toPlainText(), namespace)
+            # exec(self.objects_code_edit.toPlainText(), namespace)
+
             objects = []
-            class_names = [name for name, obj in local_vars.items() 
-                         if isinstance(obj, type) and name != '__builtins__']
-            
-            for var_name, var_value in local_vars.items():
+            class_names = [name for name, obj in namespace.items()
+                           if isinstance(obj, type) and not name.startswith('__')]
+
+            for var_name, var_value in namespace.items():
                 if var_name.startswith('__') or var_name in class_names:
                     continue
-                    
+
                 if isinstance(var_value, list):
-                    if var_value and any(isinstance(x, tuple(local_vars[cls] for cls in class_names)) for x in var_value):
+                    if var_value and any(
+                            isinstance(x, tuple(namespace[cls] for cls in class_names)) for x in var_value):
                         objects.extend(var_value)
-                elif any(isinstance(var_value, local_vars[cls]) for cls in class_names):
+                elif any(isinstance(var_value, namespace[cls]) for cls in class_names):
                     objects.append(var_value)
-            
+
             if not objects:
-                raise ValueError("No objects found in the provided code. Please define at least one object.")
-                
+                raise ValueError("No objects found in the provided code.")
+
             return objects
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Code execution failed:\n{str(e)}")
             return None
-    
+
     def save_to_mongo(self):
         objects = self.get_objects()
         if objects:
