@@ -17,7 +17,7 @@ class ClassDiagramEditor(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Edytor Diagramów Klas i Obiektów")
+        self.setWindowTitle("Generowanie klas")
         self.setGeometry(100, 100, 1100, 750)
         self.classes: ClassesDict = {}
         self.selected_class_editor: Optional[str] = None
@@ -173,7 +173,7 @@ class ClassDiagramEditor(QMainWindow):
     def _generate_imports(self) -> List[str]:
         return [
             "from __future__ import annotations",
-            "from typing import Dict, List, Optional, Set, Tuple, FrozenSet"
+            "from typing import Dict, List, Set, Tuple, FrozenSet"
         ]
 
     def _generate_class_code(self, class_name: str) -> List[str]:
@@ -544,7 +544,7 @@ class ClassDiagramEditor(QMainWindow):
         return group
 
     def _create_fields_management_panel(self) -> QWidget:
-        group = QGroupBox("Zarządzanie polami (dla wybranej klasy)")
+        group = QGroupBox("Zarządzanie polami")
         layout = QVBoxLayout(group)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
