@@ -1610,8 +1610,6 @@ class ObjectGeneratorApp(QMainWindow):
                                      f"Wystąpił nieoczekiwany błąd podczas usuwania '{object_name}': {e}")
 
     def save_objects_to_mongodb(self):
-        """Zapisuje obiekty do MongoDB."""
-
         if not self.objects:
             QMessageBox.information(self, "Informacja", "Brak obiektów do zapisania.")
             return
@@ -1623,7 +1621,7 @@ class ObjectGeneratorApp(QMainWindow):
 
         try:
             converter = PyMongoConverter(**config)
-            converter.client.admin.command('ping')  # Test połączenia
+            converter.client.admin.command('ping')
 
             saved_count = 0
             errors = []
@@ -1635,7 +1633,6 @@ class ObjectGeneratorApp(QMainWindow):
                 except Exception as e:
                     errors.append(f"Błąd przy '{obj_name}': {str(e)}")
 
-            # Wyświetlenie wyników bezpośrednio
             if not errors:
                 QMessageBox.information(self, "Sukces",
                                         f"Zapisano {saved_count} obiektów do MongoDB (Baza: {config['db_name']}).")
@@ -1655,7 +1652,7 @@ class ObjectGeneratorApp(QMainWindow):
                 converter.close()
 
     def _save_objects_to_cassandra(self):
-        """Zapisuje obiekty do Cassandra."""
+
 
         if not self.objects:
             QMessageBox.information(self, "Informacja", "Brak obiektów do zapisania.")
@@ -1676,7 +1673,6 @@ class ObjectGeneratorApp(QMainWindow):
                 except Exception as e:
                     errors.append(f"Błąd przy '{obj_name}': {str(e)}")
 
-            # Wyświetlenie wyników bezpośrednio
             if not errors:
                 QMessageBox.information(self, "Sukces",
                                         f"Zapisano {saved_count} obiektów do Cassandra (Keyspace: {keyspace}).")
