@@ -1,6 +1,4 @@
-from datetime import date, datetime
 from neo4j import GraphDatabase
-
 
 class Neo4jConverter:
     def __init__(self, uri="bolt://localhost:7687", user="neo4j", password="password"):
@@ -22,17 +20,24 @@ class Neo4jConverter:
                 return str(v)
             return v
 
-        properties_str = ", ".join(f"{k}={repr(convert_value(v))}" for k, v in vars(obj).items()
-                                   if isinstance(v, (str, int, float, bool, type(None), complex, date, datetime)))
+        if isinstance(obj, (str, int, float, complex, bool, type(None))):
+            properties = {
+                '_python_type': label,
+                '_repr': repr(obj),
+                'value': convert_value(obj)
+            }
+        else:
+            properties_str = ", ".join(f"{k}={repr(convert_value(v))}" for k, v in vars(obj).items()
+                                       if isinstance(v, (str, int, float, bool, type(None), complex)))
 
-        properties = {
-            '_python_type': label,
-            '_repr': f"{label}({properties_str})",
-        }
+            properties = {
+                '_python_type': label,
+                '_repr': f"{label}({properties_str})",
+            }
 
-        for attr, value in vars(obj).items():
-            if isinstance(value, (str, int, float, bool, type(None), complex, date, datetime)):
-                properties[attr] = convert_value(value)
+            for attr, value in vars(obj).items():
+                if isinstance(value, (str, int, float, bool, type(None), complex)):
+                    properties[attr] = convert_value(value)
 
         query = f"""
         CREATE (n:{label} $props)
@@ -75,6 +80,9 @@ class Neo4jConverter:
 
         self._create_node(obj)
 
+        if not hasattr(obj, '__dict__'):
+            return
+
         for attr, value in vars(obj).items():
             if hasattr(value, "__dict__"):
                 self._save_object(value, processed)
@@ -84,9 +92,14 @@ class Neo4jConverter:
                     if hasattr(item, "__dict__"):
                         self._save_object(item, processed)
                         self._create_relationship(obj, item, f"HAS_{attr.upper()}")
+                    elif isinstance(item, (str, int, float, complex, bool, type(None))):
+                        self._save_object(item, processed)
+                        self._create_relationship(obj, item, f"HAS_{attr.upper()}")
             elif isinstance(value, dict):
                 for item in value.values():
                     if hasattr(item, "__dict__"):
                         self._save_object(item, processed)
                         self._create_relationship(obj, item, f"HAS_{attr.upper()}")
-
+                    elif isinstance(item, (str, int, float, complex, bool, type(None))):
+                        self._save_object(item, processed)
+                        self._create_relationship(obj, item, f"HAS_{attr.upper()}")
