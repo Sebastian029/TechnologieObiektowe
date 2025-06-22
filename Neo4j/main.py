@@ -1,10 +1,11 @@
 from datetime import date, datetime
 from neo4j import GraphDatabase
 
+
 class Neo4jConverter:
     def __init__(self, uri="bolt://localhost:7687", user="neo4j", password="password"):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        self._saved_nodes = {}  # id(obj) -> Neo4j elementId
+        self._saved_nodes = {}
 
     def close(self):
         self.driver.close()
@@ -14,25 +15,30 @@ class Neo4jConverter:
         if obj_id in self._saved_nodes:
             return self._saved_nodes[obj_id]
 
-        # Używamy nazwy klasy jako etykiety
         label = obj.__class__.__name__
-        
-        properties_str = ", ".join(f"{k}={repr(v)}" for k, v in vars(obj).items() if isinstance(v, (str, int, float, bool, type(None), date, datetime)))
-    
+
+        def convert_value(v):
+            if isinstance(v, complex):
+                return str(v)
+            return v
+
+        properties_str = ", ".join(f"{k}={repr(convert_value(v))}" for k, v in vars(obj).items()
+                                   if isinstance(v, (str, int, float, bool, type(None), complex, date, datetime)))
+
         properties = {
-        '_python_type': label,
-        '_repr': f"{label}({properties_str})",  # Auto-repr
+            '_python_type': label,
+            '_repr': f"{label}({properties_str})",
         }
-        # Dodajemy właściwości obiektu
+
         for attr, value in vars(obj).items():
-            if isinstance(value, (str, int, float, bool, type(None), date, datetime)):
-                properties[attr] = value
+            if isinstance(value, (str, int, float, bool, type(None), complex, date, datetime)):
+                properties[attr] = convert_value(value)
 
         query = f"""
         CREATE (n:{label} $props)
         RETURN elementId(n)
         """
-        
+
         with self.driver.session() as session:
             result = session.run(query, props=properties)
             element_id = result.single()[0]
@@ -50,7 +56,7 @@ class Neo4jConverter:
         MATCH (b) WHERE elementId(b) = $to_id
         MERGE (a)-[r:%s]->(b)
         """ % rel_type
-        
+
         with self.driver.session() as session:
             session.run(query, from_id=from_id, to_id=to_id)
 
@@ -61,33 +67,26 @@ class Neo4jConverter:
     def _save_object(self, obj, processed=None):
         if processed is None:
             processed = set()
-        
+
         obj_id = id(obj)
         if obj_id in processed:
             return
         processed.add(obj_id)
 
-        # Najpierw tworzymy węzeł
         self._create_node(obj)
 
-        # Potem przetwarzamy zagnieżdżone obiekty
         for attr, value in vars(obj).items():
-            if hasattr(value, "__dict__"):  # Dla obiektów
+            if hasattr(value, "__dict__"):
                 self._save_object(value, processed)
                 self._create_relationship(obj, value, f"HAS_{attr.upper()}")
-            elif isinstance(value, (list, tuple, set)):  # Dla kolekcji
+            elif isinstance(value, (list, tuple, set, frozenset)):
                 for item in value:
                     if hasattr(item, "__dict__"):
                         self._save_object(item, processed)
                         self._create_relationship(obj, item, f"HAS_{attr.upper()}")
-if __name__ == "__main__":
-    from objects import objects_list
+            elif isinstance(value, dict):
+                for item in value.values():
+                    if hasattr(item, "__dict__"):
+                        self._save_object(item, processed)
+                        self._create_relationship(obj, item, f"HAS_{attr.upper()}")
 
-    converter = Neo4jConverter(uri="bolt://localhost:7687", user="neo4j", password="password")
-    try:
-        for obj in objects_list:
-            print(f"Saving {obj.__class__.__name__}...")
-            converter.save(obj)
-        print("SUCCESFUL")
-    finally:
-        converter.close()

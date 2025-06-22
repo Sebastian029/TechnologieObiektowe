@@ -1,4 +1,6 @@
 ﻿import sys
+
+import pymongo
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QComboBox, QMessageBox,
@@ -15,6 +17,12 @@ import importlib
 import inspect
 import ast
 import textwrap
+
+from cassandra.cluster import NoHostAvailable
+
+from Neo4j.main import Neo4jConverter
+from MongoDB.main import PyMongoConverter
+from Cassandra.main import PyCassandraConverter
 
 ClassData = Dict[str, Any]
 ClassesDict = Dict[str, ClassData]
@@ -1601,199 +1609,127 @@ class ObjectGeneratorApp(QMainWindow):
                 QMessageBox.critical(self, "Błąd",
                                      f"Wystąpił nieoczekiwany błąd podczas usuwania '{object_name}': {e}")
 
-    def _save_objects_to_mongodb(self):
+    def save_objects_to_mongodb(self):
+        """Zapisuje obiekty do MongoDB."""
+
         if not self.objects:
             QMessageBox.information(self, "Informacja", "Brak obiektów do zapisania.")
             return
 
+        config = {
+            "connection_string": "mongodb://localhost:27017/",
+            "db_name": "object_generator_db"
+        }
+
         try:
-            try:
-                from MongoDB.main import PyMongoConverter
-            except ImportError:
+            converter = PyMongoConverter(**config)
+            converter.client.admin.command('ping')  # Test połączenia
+
+            saved_count = 0
+            errors = []
+
+            for obj_name, obj in self.objects.items():
                 try:
-                    from main import PyMongoConverter
-                except ImportError:
-                    QMessageBox.critical(self, "Błąd Importu",
-                                         "Nie znaleziono klasy 'PyMongoConverter'.\n"
-                                         "Upewnij się, że plik z konwerterem (np. MongoDB/main.py lub main.py) istnieje.")
-                    return
-            import pymongo
+                    converter.save_to_mongodb(obj)
+                    saved_count += 1
+                except Exception as e:
+                    errors.append(f"Błąd przy '{obj_name}': {str(e)}")
 
-            connection_string = "mongodb://localhost:27017/"
-            db_name = "object_generator_db"
+            # Wyświetlenie wyników bezpośrednio
+            if not errors:
+                QMessageBox.information(self, "Sukces",
+                                        f"Zapisano {saved_count} obiektów do MongoDB (Baza: {config['db_name']}).")
+            else:
+                error_text = "\n".join(errors[:5])
+                if len(errors) > 5:
+                    error_text += f"\n... i {len(errors) - 5} więcej"
+                QMessageBox.warning(self, "Błędy Zapisu",
+                                    f"Zapisano {saved_count}/{len(self.objects)} obiektów.\n\nBłędy:\n{error_text}")
 
-            converter = None
-            try:
-                print(f"Connecting to MongoDB: {connection_string}, DB: {db_name}")
-                converter = PyMongoConverter(connection_string=connection_string, db_name=db_name)
-                converter.client.admin.command('ping')
-                print("MongoDB connection successful.")
-
-                saved_count = 0
-                errors = []
-                for obj_name, obj in self.objects.items():
-                    print(f"Saving {obj_name} ({obj.__class__.__name__})...")
-                    try:
-                        converter.save_to_mongodb(obj)
-                        saved_count += 1
-                    except Exception as e:
-                        error_msg = f"Failed saving '{obj_name}': {str(e)}"
-                        print(error_msg)
-                        errors.append(error_msg)
-
-                if not errors:
-                    QMessageBox.information(self, "Sukces",
-                                            f"Zapisano {saved_count} obiektów do MongoDB (Baza: {db_name}).")
-                else:
-                    QMessageBox.warning(self, "Błędy Zapisu",
-                                        f"Zapisano {saved_count}/{len(self.objects)} obiektów.\n\nBłędy:\n" + "\n".join(
-                                            errors))
-
-            except pymongo.errors.ConnectionFailure as e:
-                QMessageBox.critical(self, "Błąd Połączenia MongoDB", f"Nie można połączyć z MongoDB.\n{e}")
-            except Exception as e:
-                QMessageBox.critical(self, "Błąd Zapisu MongoDB", f"Wystąpił błąd: {str(e)}")
-            finally:
-                if converter: converter.close()
-
-        except ImportError:
-            QMessageBox.critical(self, "Brak Biblioteki",
-                                 "Biblioteka 'pymongo' nie jest zainstalowana (`pip install pymongo`).")
+        except pymongo.errors.ConnectionFailure as e:
+            QMessageBox.critical(self, "Błąd Połączenia MongoDB", f"Nie można połączyć z MongoDB.\n{e}")
         except Exception as e:
-            QMessageBox.critical(self, "Błąd", f"Nieoczekiwany błąd: {e}")
+            QMessageBox.critical(self, "Błąd", f"Wystąpił błąd: {str(e)}")
+        finally:
+            if 'converter' in locals():
+                converter.close()
 
     def _save_objects_to_cassandra(self):
+        """Zapisuje obiekty do Cassandra."""
+
         if not self.objects:
             QMessageBox.information(self, "Informacja", "Brak obiektów do zapisania.")
             return
 
+        keyspace = "object_db"
+
         try:
-            try:
-                from Cassandra.main import PyCassandraConverter
-            except ImportError:
+            converter = PyCassandraConverter(keyspace=keyspace)
+
+            saved_count = 0
+            errors = []
+
+            for obj_name, obj in self.objects.items():
                 try:
-                    from main import PyCassandraConverter
-                except ImportError:
-                    QMessageBox.critical(self, "Błąd Importu",
-                                         "Nie znaleziono klasy 'PyCassandraConverter'.\n"
-                                         "Upewnij się, że plik z konwerterem (np. Cassandra/main.py lub main.py) istnieje.")
-                    return
+                    converter.save_to_cassandra(obj)
+                    saved_count += 1
+                except Exception as e:
+                    errors.append(f"Błąd przy '{obj_name}': {str(e)}")
 
-            from cassandra.cluster import NoHostAvailable
+            # Wyświetlenie wyników bezpośrednio
+            if not errors:
+                QMessageBox.information(self, "Sukces",
+                                        f"Zapisano {saved_count} obiektów do Cassandra (Keyspace: {keyspace}).")
+            else:
+                error_text = "\n".join(errors[:5])
+                if len(errors) > 5:
+                    error_text += f"\n... i {len(errors) - 5} więcej"
+                QMessageBox.warning(self, "Błędy Zapisu",
+                                    f"Zapisano {saved_count}/{len(self.objects)} obiektów.\n\nBłędy:\n{error_text}")
 
-            keyspace = "object_db"
-
-            converter = None
-            try:
-                print(f"Initializing Cassandra connection for keyspace: {keyspace}")
-                converter = PyCassandraConverter(keyspace=keyspace)
-
-                print("PyCassandraConverter initialized.")
-
-                saved_count = 0
-                errors = []
-                for obj_name, obj in self.objects.items():
-                    print(f"Saving {obj_name} ({obj.__class__.__name__}) to Cassandra...")
-                    try:
-                        converter.save_to_cassandra(obj)
-                        saved_count += 1
-                    except Exception as e:
-                        error_msg = f"Failed saving '{obj_name}' to Cassandra: {str(e)}"
-                        print(error_msg)
-                        errors.append(error_msg)
-
-                if not errors:
-                    QMessageBox.information(self, "Sukces",
-                                            f"Zapisano {saved_count} obiektów do Cassandra (Keyspace: {keyspace}).")
-                else:
-                    QMessageBox.warning(self, "Błędy Zapisu",
-                                        f"Zapisano {saved_count}/{len(self.objects)} obiektów do Cassandra.\n\nBłędy:\n" + "\n".join(
-                                            errors))
-
-            except NoHostAvailable as e:
-                QMessageBox.critical(self, "Błąd Połączenia Cassandra",
-                                     f"Nie można połączyć z klastrem Cassandra dla keyspace '{keyspace}'.\nSprawdź ustawienia i dostępność bazy.\n{e}")
-            except Exception as e:
-                QMessageBox.critical(self, "Błąd Zapisu Cassandra", f"Wystąpił nieoczekiwany błąd: {str(e)}")
-            finally:
-                if converter:
-                    try:
-                        print("Closing Cassandra connection...")
-                        converter.close()
-                        print("Cassandra connection closed.")
-                    except Exception as e:
-                        print(f"Error closing Cassandra connection: {e}")
-
-
-        except ImportError:
-            QMessageBox.critical(self, "Brak Biblioteki",
-                                 "Biblioteka 'cassandra-driver' nie jest zainstalowana.\n"
-                                 "Zainstaluj ją używając: pip install cassandra-driver")
+        except NoHostAvailable as e:
+            QMessageBox.critical(self, "Błąd Połączenia Cassandra",
+                                 f"Nie można połączyć z klastrem Cassandra dla keyspace '{keyspace}'.\n{e}")
         except Exception as e:
-            QMessageBox.critical(self, "Błąd", f"Nieoczekiwany błąd: {e}")
+            QMessageBox.critical(self, "Błąd", f"Wystąpił błąd: {str(e)}")
+        finally:
+            if 'converter' in locals():
+                try:
+                    converter.close()
+                except Exception as e:
+                    print(f"Błąd zamykania połączenia Cassandra: {e}")
 
     def _save_objects_to_neo4j(self):
+
         if not self.objects:
             QMessageBox.information(self, "Informacja", "Brak obiektów do zapisania.")
             return
 
+        config = {
+            "uri": "bolt://localhost:7687",
+            "user": "neo4j",
+            "password": "password"
+        }
+
         try:
-            try:
-                from Neo4j.main import Neo4jConverter
-            except ImportError:
-                try:
-                    from main import Neo4jConverter
-                except ImportError:
-                    QMessageBox.critical(self, "Błąd Importu",
-                                         "Nie znaleziono klasy 'Neo4jConverter'.\n"
-                                         "Upewnij się, że plik z konwerterem (np. Neo4j/main.py lub main.py) istnieje.")
-                    return
+            converter = Neo4jConverter(**config)
+            top_objects = self._find_top_level_objects()
 
-            uri = "bolt://localhost:7687"
-            user = "neo4j"
-            password = "password"
+            if not top_objects:
+                QMessageBox.information(self, "Informacja", "Brak obiektów najwyższego poziomu.")
+                return
 
-            converter = None
-            try:
-                print(f"Connecting to Neo4j at {uri} as user '{user}'")
-                converter = Neo4jConverter(uri=uri, user=user, password=password)
+            saved_count = 0
+            for obj_name in top_objects:
+                converter.save(self.objects[obj_name])
+                saved_count += 1
 
-                top_level_objects = self._find_top_level_objects()
-
-                if not top_level_objects:
-                    QMessageBox.information(self, "Informacja", "Brak obiektów najwyższego poziomu do zapisania.")
-                    return
-
-                saved_count = 0
-                errors = []
-
-                for obj_name in top_level_objects:
-                    obj = self.objects[obj_name]
-                    print(f"Saving top-level object {obj_name} ({obj.__class__.__name__}) and its references...")
-                    try:
-                        converter.save(obj)
-                        saved_count += 1
-                    except Exception as e:
-                        error_msg = f"Nie udało się zapisać '{obj_name}': {str(e)}"
-                        print(error_msg)
-                        errors.append(error_msg)
-
-                if not errors:
-                    QMessageBox.information(self, "Sukces",
-                                            f"Zapisano {saved_count} obiektów najwyższego poziomu do Neo4j.")
-                else:
-                    QMessageBox.warning(self, "Błędy Zapisu",
-                                        f"Zapisano {saved_count}/{len(top_level_objects)} obiektów.\n\nBłędy:\n" + "\n".join(
-                                            errors))
-
-            except Exception as e:
-                QMessageBox.critical(self, "Błąd Połączenia Neo4j", f"Nie można połączyć z Neo4j.\n{e}")
-            finally:
-                if converter:
-                    converter.close()
+            QMessageBox.information(self, "Sukces", f"Zapisano {saved_count} obiektów do Neo4j.")
 
         except Exception as e:
-            QMessageBox.critical(self, "Błąd", f"Nieoczekiwany błąd: {e}")
+            QMessageBox.critical(self, "Błąd", f"Błąd zapisu: {e}")
+        finally:
+            converter.close()
 
     def _find_top_level_objects(self) -> List[str]:
         referenced_objects = set()
